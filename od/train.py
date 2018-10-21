@@ -41,7 +41,7 @@ def train_autoencoder(images_dir, log_dir):
     loader = DataLoader(dataset, batch_size=64, shuffle=True, num_workers=8,
                         pin_memory=False)
     test_images = [dataset[i] for i in np.random.choice(len(dataset), size=100, replace=False)]
-    model = ResidualAE([64, 128]).to(device)
+    model = ResidualAE((input_size, input_size), [64, 128, 256], [256, 64]).to(device)
     loss_fn = nn.MSELoss()
     optimizier = torch.optim.Adam(model.parameters())
 

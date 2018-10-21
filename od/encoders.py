@@ -2,6 +2,7 @@ import abc
 
 import torch
 from torch import nn
+import numpy as np
 
 
 class EncoderBlock(nn.Module):
@@ -69,20 +70,53 @@ class DecoderBlock(nn.Module):
         return self.residual_path(x) + self.conv_path(x)
 
 
+def fc_layer(in_features, out_features, activation=None, batchnorm=True):
+    layers = [nn.Linear(in_features, out_features)]
+
+    if activation is not None:
+        layers += [activation]
+    if batchnorm:
+        layers += [nn.BatchNorm1d(out_features)]
+
+    return nn.Sequential(*layers)
+
+
+
 class ResidualAE(nn.Module):
 
-    def __init__(self, conv_filters, color_channels=3):
+    def __init__(self, image_size, conv_sizes, fc_sizes, *, color_channels=3):
         super().__init__()
 
-        dimensions = list(zip([color_channels, *conv_filters], conv_filters))
-        self.encoder = nn.Sequential(
-            *[EncoderBlock(d_in, d_out) for d_in, d_out in dimensions])
-        self.decoder = nn.Sequential(
-            *[DecoderBlock(d_in, d_out) for d_out, d_in in reversed(dimensions)],
+        conv_dims = list(zip([color_channels, *conv_sizes], conv_sizes))
+        self.conv_encoder = nn.Sequential(
+            *[EncoderBlock(d_in, d_out) for d_in, d_out in conv_dims])
+
+        with torch.no_grad():
+            dummy_input = torch.Tensor(1, color_channels, *image_size)
+            dummy_output = self.conv_encoder(dummy_input)
+        self.intermediate_size = dummy_output.shape[1:]
+        self.first_fc_size = np.prod(self.intermediate_size)
+
+        fc_dims = list(zip([self.first_fc_size, *fc_sizes], fc_sizes))
+        self.fc_encoder = nn.Sequential(
+            *[fc_layer(d_in, d_out, activation=nn.LeakyReLU())
+              for d_in, d_out in fc_dims]
+        )
+
+        self.fc_decoder = nn.Sequential(
+            *[fc_layer(d_out, d_in, activation=nn.LeakyReLU())
+              for d_in, d_out in reversed(fc_dims)]
+        )
+        self.conv_decoder = nn.Sequential(
+            *[DecoderBlock(d_in, d_out) for d_out, d_in in reversed(conv_dims)],
             nn.Sigmoid())
 
     def forward(self, x):
-        y = self.encoder(x)
-        y = self.decoder(y)
-        return y
+        y = self.conv_encoder(x)
+        y = y.view(-1, self.first_fc_size)
+        y = self.fc_encoder(y)
 
+        y = self.fc_decoder(y)
+        y = y.view(-1, *self.intermediate_size)
+        y = self.conv_decoder(y)
+        return y
