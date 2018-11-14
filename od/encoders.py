@@ -101,7 +101,7 @@ class ResidualAE(nn.Module):
         self.fc_encoder = nn.Sequential(
             *[fc_layer(d_in, d_out, activation=nn.LeakyReLU())
               for d_in, d_out in fc_dims[:-1]],
-            fc_layer(*fc_dims[-1], activation=latent_activation))
+            fc_layer(*fc_dims[-1], activation=latent_activation, batchnorm=False))
 
         self.fc_decoder = nn.Sequential(
             *[fc_layer(d_out, d_in, activation=nn.LeakyReLU())

@@ -76,7 +76,7 @@ class AutoregressiveLoss(nn.Module):
         self.autoreg = autoreg
 
     def forward(self, x):
-        latent = nn.functional.sigmoid(self.autoencoder.encode(x))
+        latent = self.autoencoder.encode(x)
         reconstruction = self.autoencoder.decode(latent)
         reconstruction_loss = nn.functional.mse_loss(x, reconstruction)
 
