@@ -81,7 +81,6 @@ def fc_layer(in_features, out_features, activation=None, batchnorm=True):
     return nn.Sequential(*layers)
 
 
-
 class ResidualAE(nn.Module):
 
     def __init__(self, image_size, conv_sizes, fc_sizes, *, color_channels=3):
@@ -100,8 +99,7 @@ class ResidualAE(nn.Module):
         fc_dims = list(zip([self.first_fc_size, *fc_sizes], fc_sizes))
         self.fc_encoder = nn.Sequential(
             *[fc_layer(d_in, d_out, activation=nn.LeakyReLU())
-              for d_in, d_out in fc_dims]
-        )
+              for d_in, d_out in fc_dims])
 
         self.fc_decoder = nn.Sequential(
             *[fc_layer(d_out, d_in, activation=nn.LeakyReLU())
@@ -111,12 +109,24 @@ class ResidualAE(nn.Module):
             *[DecoderBlock(d_in, d_out) for d_out, d_in in reversed(conv_dims)],
             nn.Sigmoid())
 
-    def forward(self, x):
+    def encode(self, x):
         y = self.conv_encoder(x)
         y = y.view(-1, self.first_fc_size)
         y = self.fc_encoder(y)
+        return y
 
-        y = self.fc_decoder(y)
+    def decode(self, x):
+        y = self.fc_decoder(x)
         y = y.view(-1, *self.intermediate_size)
         y = self.conv_decoder(y)
         return y
+
+    def forward(self, x):
+        """
+        >>> model = ResidualAE((64, 64), [32], [5], color_channels=4)
+        >>> x = torch.randn(2, 4, 64, 64)
+        >>> y = model(x)
+        >>> tuple(y.shape)
+        (2, 4, 64, 64)
+        """
+        return self.decode(self.encode(x))

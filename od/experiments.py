@@ -11,10 +11,10 @@ from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 from tqdm import tqdm, trange
 
-from .autoregress import AutoregresionModule, AutoregressiveLoss
-from .datasets import UnsupervisedMNIST
-from .encoders import ResidualAE
-from .utils import logger
+from autoregress import AutoregresionModule, AutoregressiveLoss
+from datasets import UnsupervisedMNIST
+from encoders import ResidualAE
+from utils import logger
 
 WRITE_DIRECTORY = click.Path(file_okay=False, resolve_path=True, writable=True)
 
