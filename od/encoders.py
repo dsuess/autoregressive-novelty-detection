@@ -83,7 +83,8 @@ def fc_layer(in_features, out_features, activation=None, batchnorm=True):
 
 class ResidualAE(nn.Module):
 
-    def __init__(self, image_size, conv_sizes, fc_sizes, *, color_channels=3):
+    def __init__(self, image_size, conv_sizes, fc_sizes, *, color_channels=3,
+                 latent_activation=None):
         super().__init__()
 
         conv_dims = list(zip([color_channels, *conv_sizes], conv_sizes))
@@ -99,12 +100,12 @@ class ResidualAE(nn.Module):
         fc_dims = list(zip([self.first_fc_size, *fc_sizes], fc_sizes))
         self.fc_encoder = nn.Sequential(
             *[fc_layer(d_in, d_out, activation=nn.LeakyReLU())
-              for d_in, d_out in fc_dims])
+              for d_in, d_out in fc_dims[:-1]],
+            fc_layer(*fc_dims[-1], activation=latent_activation))
 
         self.fc_decoder = nn.Sequential(
             *[fc_layer(d_out, d_in, activation=nn.LeakyReLU())
-              for d_in, d_out in reversed(fc_dims)]
-        )
+              for d_in, d_out in reversed(fc_dims)])
         self.conv_decoder = nn.Sequential(
             *[DecoderBlock(d_in, d_out) for d_out, d_in in reversed(conv_dims)],
             nn.Sigmoid())
