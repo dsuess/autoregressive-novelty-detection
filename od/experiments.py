@@ -11,10 +11,10 @@ from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 from tqdm import tqdm, trange
 
-from autoregress import AutoregresionModule, AutoregressiveLoss
-from datasets import UnsupervisedMNIST
-from encoders import ResidualAE
-from utils import logger
+from od.autoregress import AutoregresionModule, AutoregressiveLoss
+from od.datasets import UnsupervisedMNIST
+from od.encoders import ResidualAE
+from od.utils import logger
 
 WRITE_DIRECTORY = click.Path(file_okay=False, resolve_path=True, writable=True)
 
@@ -28,7 +28,7 @@ class Experiment:
 
     Datasets = namedtuple('Datasets', 'train, test')
 
-    def __init__(self, datasets, conv_channels, fc_channels, mfc_channels, batch_size, log_dir):
+    def __init__(self, datasets, conv_channels, fc_channels, mfc_channels, batch_size, logdir):
         self.datasets = self.Datasets(*datasets)
         self.loaders = self.Datasets(
             DataLoader(self.datasets.train, batch_size=batch_size, shuffle=True,
@@ -48,9 +48,9 @@ class Experiment:
         self.model = model.to(self.device)
         self.optimizer = torch.optim.Adam(model.parameters())
 
-        Path(log_dir).mkdir(exist_ok=True)
-        self.log_dir = log_dir
-        self.checkpoint_dir = Path(log_dir) / 'checkpoints'
+        Path(logdir).mkdir(exist_ok=True)
+        self.logdir = logdir
+        self.checkpoint_dir = Path(logdir) / 'checkpoints'
         self.checkpoint_dir.mkdir(exist_ok=True)
 
     @property
@@ -77,7 +77,7 @@ class Experiment:
         return self.restore(latest)
 
     def run(self):
-        summary_writer = SummaryWriter(self.log_dir)
+        summary_writer = SummaryWriter(self.logdir)
         restored_epoch = self.restore_latest(self.checkpoint_dir)
         # Batch size == 1 fails due to batch norm in training mode
         if restored_epoch <= 0:
@@ -129,8 +129,8 @@ def experiments():
 
 
 @experiments.command()
-@click.option('--log-dir', required=True, type=WRITE_DIRECTORY)
-def mnist(log_dir):
+@click.option('--logdir', required=True, type=WRITE_DIRECTORY)
+def mnist(logdir):
     all_digits = set(range(10))
     test_digits = {3, 5, 8}
     train_digits = all_digits.difference(test_digits)
@@ -145,4 +145,4 @@ def mnist(log_dir):
         fc_channels=[64],
         mfc_channels=[32, 32 ,32 ,32, 100],
         batch_size=64,
-        log_dir=log_dir).run()
+        logdir=logdir).run()
