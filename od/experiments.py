@@ -1,27 +1,28 @@
 import os
 from collections import namedtuple
+from multiprocessing import cpu_count
 from pathlib import Path
 
 import click
 import numpy as np
 import torch
-from tensorboardX import SummaryWriter
-from torch import nn
-from torch.utils.data import DataLoader
-from torchvision import datasets, transforms
-from tqdm import tqdm, trange
-
 from od.autoregress import AutoregresionModule, AutoregressiveLoss
 from od.datasets import UnsupervisedMNIST
 from od.encoders import ResidualAE
 from od.utils import logger
+from tensorboardX import SummaryWriter
+from torch import nn
+from torch.utils.data import DataLoader
+from torchvision import datasets, transforms
+from torchvision.utils import make_grid
+from tqdm import tqdm, trange
 
 WRITE_DIRECTORY = click.Path(file_okay=False, resolve_path=True, writable=True)
 
 
 def sample_examples(dataset, size):
     sel = np.random.choice(len(dataset), size=min(size, len(dataset)), replace=False)
-    return torch.cat([dataset[i][None] for i in sel], 0)
+    return torch.cat([dataset[i][0][None] for i in sel], 0)
 
 
 class Experiment:
@@ -31,9 +32,10 @@ class Experiment:
     def __init__(self, datasets, conv_channels, fc_channels, mfc_channels, batch_size, logdir):
         self.datasets = self.Datasets(*datasets)
         self.loaders = self.Datasets(
-            DataLoader(self.datasets.train, batch_size=batch_size, shuffle=True,
-                       pin_memory=True),
-            DataLoader(self.datasets.test, batch_size=batch_size))
+            DataLoader(self.datasets.train, batch_size=batch_size,
+                       shuffle=True, num_workers=2 * cpu_count()),
+            DataLoader(self.datasets.test, batch_size=batch_size,
+                       num_workers=2 * cpu_count()))
         self.sample_images = self.Datasets(
             sample_examples(self.datasets.train, size=50),
             sample_examples(self.datasets.test, size=50))
@@ -55,7 +57,7 @@ class Experiment:
 
     @property
     def datashape(self):
-        return self.datasets.train[0].shape
+        return self.datasets.train[0][0].shape
 
     def restore(self, ckpt_path):
         logger.info(f'Restoring model from {ckpt_path}')
@@ -76,6 +78,42 @@ class Experiment:
             return 0
         return self.restore(latest)
 
+    def train_epoch(self, epoch, summary_writer):
+        self.model.train()
+        loss_summary = {
+            'total': torch.zeros(1, dtype=torch.float, device=self.device),
+            'reconstruction': torch.zeros(1, dtype=torch.float, device=self.device),
+            'autoregressive': torch.zeros(1, dtype=torch.float, device=self.device)}
+
+        for x, in tqdm(self.loaders.train):
+            x = x.to(self.device)
+            losses = self.model(x)
+            loss = losses.reconstruction + self.model.autoreg.bins * losses.autoregressive
+
+            loss_summary['total'] += loss
+            loss_summary['reconstruction'] += losses.reconstruction
+            loss_summary['autoregressive'] += losses.autoregressive
+
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.optimizer.step()
+
+        for name, value in loss_summary.items():
+            summary_writer.add_scalar(
+                name, value / len(self.datasets.train), epoch)
+
+    def eval_epoch(self, epoch, summary_writer):
+        self.model.eval()
+        for n, img in enumerate(self.sample_images.train):
+            img_pred, = self.model.autoencoder(img[None].to(self.device))
+            merged = make_grid([img, img_pred.cpu()])
+            summary_writer.add_image(f'train_{n}', merged, epoch)
+
+        for n, img in enumerate(self.sample_images.test):
+            img_pred, = self.model.autoencoder(img[None].to(self.device))
+            merged = make_grid([img, img_pred.cpu()])
+            summary_writer.add_image(f'test_{n}', merged, epoch)
+
     def run(self):
         summary_writer = SummaryWriter(self.logdir)
         restored_epoch = self.restore_latest(self.checkpoint_dir)
@@ -85,28 +123,9 @@ class Experiment:
             summary_writer.add_graph(self.model, dummy_input)
 
         for epoch in trange(restored_epoch + 1, 11):
-
-            loss_summary = {
-                'total': torch.zeros(1, dtype=torch.float, device=self.device),
-                'reconstruction': torch.zeros(1, dtype=torch.float, device=self.device),
-                'autoregressive': torch.zeros(1, dtype=torch.float, device=self.device)}
-
-            for x in tqdm(self.loaders.train):
-                x = x.to(self.device)
-                losses = self.model(x)
-                loss = losses.reconstruction + self.model.autoreg.bins * losses.autoregressive
-
-                loss_summary['total'] += loss
-                loss_summary['reconstruction'] += losses.reconstruction
-                loss_summary['autoregressive'] += losses.autoregressive
-
-                self.optimizer.zero_grad()
-                loss.backward()
-                self.optimizer.step()
-
-            for name, value in loss_summary.items():
-                summary_writer.add_scalar(
-                    name, value / len(self.datasets.train), epoch)
+            with torch.autograd.detect_anomaly():
+                self.train_epoch(epoch, summary_writer)
+                self.eval_epoch(epoch, summary_writer)
 
             state = {
                 'epoch': epoch, 'model': self.model.state_dict(),
@@ -114,13 +133,6 @@ class Experiment:
             filename = self.checkpoint_dir / f'checkpoint_{epoch:04d}.pt'
             logger.info(f'Saving checkpoint to {filename}')
             torch.save(state, filename)
-
-            #  model.eval()
-            #  for n, img in enumerate(test_images):
-                #  img_pred = model.autoencoder(img[None].to(device))[0]
-                #  merged = make_grid([img.cpu(), img_pred.cpu()])
-                #  summary_writer.add_image(f'image_{n}', merged, epoch)
-            #  model.train()
 
 
 @click.group()
@@ -134,10 +146,8 @@ def mnist(logdir):
     all_digits = set(range(10))
     test_digits = {3, 5, 8}
     train_digits = all_digits.difference(test_digits)
-    ds_train = UnsupervisedMNIST(
-        exclude_digits=test_digits, transform=transforms.ToTensor())
-    ds_test = UnsupervisedMNIST(
-        exclude_digits=train_digits, transform=transforms.ToTensor())
+    ds_train = UnsupervisedMNIST(exclude_digits=test_digits)
+    ds_test = UnsupervisedMNIST(exclude_digits=train_digits)
 
     Experiment(
         datasets=(ds_train, ds_test),
