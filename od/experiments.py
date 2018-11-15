@@ -32,6 +32,8 @@ class Experiment:
     def __init__(self, datasets, conv_channels, fc_channels, mfc_channels,
                  batch_size, nr_epochs, logdir):
         self.datasets = self.Datasets(*datasets)
+        logger.info(f'Got {len(self.datasets.train)} training examples and '
+                    f'{len(self.datasets.test)} test examples')
         self.loaders = self.Datasets(
             DataLoader(self.datasets.train, batch_size=batch_size,
                        shuffle=True, num_workers=2 * cpu_count()),
