@@ -5,6 +5,9 @@ import torch
 from torch import nn
 
 
+__all__ = ['AutoregresionModule', 'AutoregressiveLoss']
+
+
 # TODO Optimize axis alignment to get rid of permute in loss
 class AutoregressiveLayer(nn.Linear):
     def __init__(self, dim, in_features, out_features, *, mask_type,
@@ -93,3 +96,14 @@ class AutoregressiveLoss(nn.Module):
             latent_binned_pred, latent_binned)
 
         return self.Result(reconstruction_loss, autoreg_loss)
+
+    def predict(self, x, retrecons=False):
+        with torch.no_grad():
+            latent = self.encoder.encode(x)
+            prob = self.regressor(latent)
+
+            if retrecons:
+                recons = self.encoder.decode(latent)
+                return prob, recons
+            else:
+                return prob

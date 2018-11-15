@@ -10,6 +10,9 @@ import torch
 from torch.utils.data import TensorDataset
 
 
+__all__ = ['UnsupervisedMNIST']
+
+
 def UnsupervisedMNIST(*, exclude_digits=None):
     exclude_digits = set() if exclude_digits is not None \
         else exclude_digits

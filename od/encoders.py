@@ -5,6 +5,9 @@ from torch import nn
 import numpy as np
 
 
+__all__ = ['ResidualAE']
+
+
 class EncoderBlock(nn.Module):
 
     def __init__(self, in_channels, out_channels):
