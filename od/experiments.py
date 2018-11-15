@@ -29,7 +29,8 @@ class Experiment:
 
     Datasets = namedtuple('Datasets', 'train, test')
 
-    def __init__(self, datasets, conv_channels, fc_channels, mfc_channels, batch_size, logdir):
+    def __init__(self, datasets, conv_channels, fc_channels, mfc_channels,
+                 batch_size, nr_epochs, logdir):
         self.datasets = self.Datasets(*datasets)
         self.loaders = self.Datasets(
             DataLoader(self.datasets.train, batch_size=batch_size,
@@ -53,6 +54,7 @@ class Experiment:
         self.optimizer = torch.optim.Adam(model.parameters())
 
         Path(logdir).mkdir(exist_ok=True)
+        self.nr_epochs = nr_epochs
         self.logdir = logdir
         self.checkpoint_dir = Path(logdir) / 'checkpoints'
         self.checkpoint_dir.mkdir(exist_ok=True)
@@ -125,7 +127,11 @@ class Experiment:
             summary_writer.add_graph(self.model, dummy_input)
 
         self.eval_epoch(0, summary_writer)
-        for epoch in trange(restored_epoch + 1, 11):
+        epochs = tqdm(range(restored_epoch + 1, self.nr_epochs + 1),
+                      total=self.nr_epochs, initial=restored_epoch)
+        epochs.refresh()
+        for epoch in epochs:
+            epochs.update(epoch)
             self.train_epoch(epoch, summary_writer)
             self.eval_epoch(epoch, summary_writer)
 
@@ -157,4 +163,5 @@ def mnist(logdir):
         fc_channels=[64],
         mfc_channels=[32, 32 ,32 ,32, 100],
         batch_size=64,
+        nr_epochs=50,
         logdir=logdir).run()
