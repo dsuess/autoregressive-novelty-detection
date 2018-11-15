@@ -83,51 +83,51 @@ class Experiment:
     def train_epoch(self, epoch, summary_writer):
         self.model.train()
         loss_summary = {
-            'total': torch.zeros(1, dtype=torch.float, device=self.device),
-            'reconstruction': torch.zeros(1, dtype=torch.float, device=self.device),
-            'autoregressive': torch.zeros(1, dtype=torch.float, device=self.device)}
+            'loss/total': torch.zeros(1, dtype=torch.float, device=self.device),
+            'loss/reconstruction': torch.zeros(1, dtype=torch.float, device=self.device),
+            'loss/autoregressive': torch.zeros(1, dtype=torch.float, device=self.device)}
 
         for x, in tqdm(self.loaders.train):
             x = x.to(self.device)
             losses = self.model(x)
-            loss = losses.reconstruction + self.model.autoreg.bins * losses.autoregressive
+            loss = losses.reconstruction + losses.autoregressive
 
-            loss_summary['total'] += loss
-            loss_summary['reconstruction'] += losses.reconstruction
-            loss_summary['autoregressive'] += losses.autoregressive
+            loss_summary['loss/total'] += loss
+            loss_summary['loss/reconstruction'] += losses.reconstruction
+            loss_summary['loss/autoregressive'] += losses.autoregressive
 
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
 
+        nr_examples = len(self.datasets.train)
         for name, value in loss_summary.items():
-            summary_writer.add_scalar(
-                name, value / len(self.datasets.train), epoch)
+            summary_writer.add_scalar(name, value / nr_examples, epoch)
 
     def eval_epoch(self, epoch, summary_writer):
         self.model.eval()
         for n, img in enumerate(self.sample_images.train):
-            img_pred, = self.model.autoencoder(img[None].to(self.device))
+            img_pred, = self.model.encoder(img[None].to(self.device))
             merged = make_grid([img, img_pred.cpu()])
             summary_writer.add_image(f'train_{n}', merged, epoch)
 
         for n, img in enumerate(self.sample_images.test):
-            img_pred, = self.model.autoencoder(img[None].to(self.device))
+            img_pred, = self.model.encoder(img[None].to(self.device))
             merged = make_grid([img, img_pred.cpu()])
             summary_writer.add_image(f'test_{n}', merged, epoch)
 
     def run(self):
         summary_writer = SummaryWriter(self.logdir)
         restored_epoch = self.restore_latest(self.checkpoint_dir)
-        # Batch size == 1 fails due to batch norm in training mode
-        #  if restored_epoch <= 0:
-        #      dummy_input = torch.Tensor(3, *self.datashape).to(self.device)
-        #      summary_writer.add_graph(self.model, dummy_input)
+        if restored_epoch <= 0:
+            # Batch size == 1 fails due to batch norm in training mode
+            dummy_input = torch.Tensor(3, *self.datashape).to(self.device)
+            summary_writer.add_graph(self.model, dummy_input)
 
+        self.eval_epoch(0, summary_writer)
         for epoch in trange(restored_epoch + 1, 11):
-            with torch.autograd.detect_anomaly():
-                self.train_epoch(epoch, summary_writer)
-                self.eval_epoch(epoch, summary_writer)
+            self.train_epoch(epoch, summary_writer)
+            self.eval_epoch(epoch, summary_writer)
 
             state = {
                 'epoch': epoch, 'model': self.model.state_dict(),
@@ -156,5 +156,5 @@ def mnist(logdir):
         conv_channels=[32, 64],
         fc_channels=[64],
         mfc_channels=[32, 32 ,32 ,32, 100],
-        batch_size=16,
+        batch_size=64,
         logdir=logdir).run()

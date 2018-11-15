@@ -91,8 +91,9 @@ class ResidualAE(nn.Module):
         self.conv_encoder = nn.Sequential(
             *[EncoderBlock(d_in, d_out) for d_in, d_out in conv_dims])
 
+        self.input_shape = (color_channels, *image_size)
         with torch.no_grad():
-            dummy_input = torch.Tensor(1, color_channels, *image_size)
+            dummy_input = torch.Tensor(1, *self.input_shape)
             dummy_output = self.conv_encoder(dummy_input)
         self.intermediate_size = dummy_output.shape[1:]
         self.first_fc_size = np.prod(self.intermediate_size)

@@ -1,6 +1,8 @@
+from collections import namedtuple
+
+import numpy as np
 import torch
 from torch import nn
-from collections import namedtuple
 
 
 # TODO Optimize axis alignment to get rid of permute in loss
@@ -70,18 +72,23 @@ class AutoregressiveLoss(nn.Module):
 
     Result = namedtuple('Result', 'reconstruction, autoregressive')
 
-    def __init__(self, autoencoder, autoreg, **kwargs):
+    def __init__(self, encoder, regressor, **kwargs):
         super().__init__(**kwargs)
-        self.autoencoder = autoencoder
-        self.autoreg = autoreg
+        self.encoder = encoder
+        self.regressor = regressor
+        normalization = np.prod(encoder.input_shape)
+        normalization = torch.Tensor([normalization]).reshape(tuple()).float()
+        self.register_buffer('reconstruction_normalization', normalization)
+
 
     def forward(self, x):
-        latent = self.autoencoder.encode(x)
-        reconstruction = self.autoencoder.decode(latent)
+        latent = self.encoder.encode(x)
+        reconstruction = self.encoder.decode(latent)
         reconstruction_loss = nn.functional.mse_loss(x, reconstruction)
+        reconstruction_loss /= self.reconstruction_normalization
 
-        latent_binned = (latent * self.autoreg.bins).type(torch.int64)
-        latent_binned_pred = self.autoreg(latent).permute(0, 2, 1)
+        latent_binned = (latent * self.regressor.bins).type(torch.int64)
+        latent_binned_pred = self.regressor(latent).permute(0, 2, 1)
         autoreg_loss = nn.functional.cross_entropy(
             latent_binned_pred, latent_binned)
 
