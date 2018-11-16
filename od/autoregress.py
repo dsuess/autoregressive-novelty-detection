@@ -79,10 +79,14 @@ class AutoregressiveLoss(nn.Module):
         super().__init__(**kwargs)
         self.encoder = encoder
         self.regressor = regressor
-        normalization = np.prod(encoder.input_shape)
-        normalization = torch.Tensor([normalization]).reshape(tuple()).float()
-        self.register_buffer('reconstruction_normalization', normalization)
 
+        self.register_scalar('reconstruction_normalization',
+                             np.prod(encoder.input_shape), torch.float)
+        self.register_scalar('bins', self.regressor.bins - 1, torch.int64)
+
+    def register_scalar(self, name, val, type):
+        val = torch.Tensor([val]).reshape(tuple()).to(type)
+        self.register_buffer(name, val)
 
     def forward(self, x):
         latent = self.encoder.encode(x)
@@ -90,7 +94,8 @@ class AutoregressiveLoss(nn.Module):
         reconstruction_loss = nn.functional.mse_loss(x, reconstruction)
         reconstruction_loss /= self.reconstruction_normalization
 
-        latent_binned = (latent * self.regressor.bins).type(torch.int64)
+        latent_binned = (latent * self.bins.float()).type(torch.int64)
+        latent_binned = torch.max(input=latent_binned , other=self.bins)
         latent_binned_pred = self.regressor(latent).permute(0, 2, 1)
         autoreg_loss = nn.functional.cross_entropy(
             latent_binned_pred, latent_binned)
@@ -100,7 +105,8 @@ class AutoregressiveLoss(nn.Module):
     def predict(self, x, retrecons=False):
         with torch.no_grad():
             latent = self.encoder.encode(x)
-            prob = self.regressor(latent)
+            logits = self.regressor(latent)
+            prob = torch.softmax(logits, dim=2)
 
             if retrecons:
                 recons = self.encoder.decode(latent)
