@@ -53,7 +53,7 @@ class Experiment:
         regressor = AutoregresionModule(fc_channels[-1], mfc_channels)
         model = AutoregressiveLoss(encoder, regressor)
         self.model = model.to(self.device)
-        self.optimizer = torch.optim.Adam(model.parameters())
+        self.optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
         Path(logdir).mkdir(exist_ok=True)
         self.nr_epochs = nr_epochs
@@ -110,14 +110,18 @@ class Experiment:
 
     def eval_epoch(self, epoch, summary_writer):
         self.model.eval()
-        for n, img in enumerate(self.sample_images.train):
-            img_pred, = self.model.encoder(img[None].to(self.device))
-            merged = make_grid([img, img_pred.cpu()])
+        _, imgs_pred = self.model.predict(
+            self.sample_images.train.to(self.device), retrecons=True)
+        img_pairs = zip(self.sample_images.train, imgs_pred.cpu())
+        for n, img_pair in enumerate(img_pairs):
+            merged = make_grid(list(img_pair))
             summary_writer.add_image(f'train_{n}', merged, epoch)
 
-        for n, img in enumerate(self.sample_images.test):
-            img_pred, = self.model.encoder(img[None].to(self.device))
-            merged = make_grid([img, img_pred.cpu()])
+        _, imgs_pred = self.model.predict(
+            self.sample_images.test.to(self.device), retrecons=True)
+        img_pairs = zip(self.sample_images.test, imgs_pred.cpu())
+        for n, img_pair in enumerate(img_pairs):
+            merged = make_grid(list(img_pair))
             summary_writer.add_image(f'test_{n}', merged, epoch)
 
     def run(self):
@@ -125,7 +129,8 @@ class Experiment:
         restored_epoch = self.restore_latest(self.checkpoint_dir)
         if restored_epoch <= 0:
             # Batch size == 1 fails due to batch norm in training mode
-            dummy_input = torch.Tensor(3, *self.datashape).to(self.device)
+            self.model.eval()
+            dummy_input = torch.Tensor(1, *self.datashape).to(self.device)
             summary_writer.add_graph(self.model, dummy_input)
 
         self.eval_epoch(0, summary_writer)
