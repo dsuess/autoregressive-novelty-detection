@@ -10,7 +10,7 @@ __all__ = ['AutoregresionModule', 'AutoregressiveLoss']
 
 
 # TODO Optimize axis alignment to get rid of permute in loss
-class AutoregressiveLayer(nn.Linear):
+class AutoregressiveLinear(nn.Linear):
     def __init__(self, dim, in_features, out_features, *, mask_type,
                  batchnorm=True, activation=None, **kwargs):
         super().__init__(dim * in_features, dim * out_features, **kwargs)
@@ -18,14 +18,7 @@ class AutoregressiveLayer(nn.Linear):
         self.dim = dim
         self.in_features = in_features
         self.out_features = out_features
-        self.activation = activation
         self.mask_type = mask_type
-
-        if batchnorm:
-            self.batchnorm = nn.BatchNorm1d(dim * out_features)
-            logger.info('Using batchnorm for AutoregressiveLayer')
-        else:
-            self.batchnorm = lambda x: x
 
         self.in_shape = (dim * in_features,)
         self.out_shape = (dim, out_features)
@@ -36,26 +29,44 @@ class AutoregressiveLayer(nn.Linear):
         for j in range(dim):
             mask[j, :, j + int(mask_type == 'B'):] = 0
 
-
     def forward(self, x):
         self.weight.data *= self.mask
         y = super().forward(x.view(-1, *self.in_shape))
-        y = self.batchnorm(y)
-
-        if self.activation is not None:
-            y = self.activation(y)
-
         return y.view(-1, *self.out_shape)
 
     def __repr__(self):
-        return f'AutoregressiveLayer(dim={self.dim}, ' \
+        return f'AutoregressiveLinear(dim={self.dim}, ' \
             f'in_features={self.in_features}, ' \
             f'out_features={self.out_features}, ' \
             f'mask_type={self.mask_type})'
 
 
+class AutoregressiveLayer(nn.Module):
+    def __init__(self, *args, activation=None, batchnorm=True, **kwargs):
+        super().__init__()
+        self.linear = AutoregressiveLinear(*args, **kwargs)
+        self.activation = activation() if activation is not None else None
+        self.in_shape = (np.prod(self.linear.out_shape),)
+        self.out_shape = self.linear.out_shape
+
+        if batchnorm:
+            self.batchnorm = nn.BatchNorm1d(*self.in_shape)
+        else:
+            self.batchnorm = None
+
+    def forward(self, x):
+        y = self.linear(x)
+        if self.activation is not None:
+            y = self.activation(y)
+        if self.batchnorm is not None:
+            y = y.view(-1, *self.in_shape)
+            y = self.batchnorm(y)
+            y = y.view(-1, *self.out_shape)
+        return y
+
+
 class AutoregresionModule(nn.Module):
-    def __init__(self, dim, mfc_layers, activation=nn.functional.leaky_relu,
+    def __init__(self, dim, mfc_layers, activation=nn.LeakyReLU,
                  **kwargs):
         super().__init__()
         self.mfc_layers = list(mfc_layers)
