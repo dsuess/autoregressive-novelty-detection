@@ -30,7 +30,7 @@ class Experiment:
     Datasets = namedtuple('Datasets', 'train, test')
 
     def __init__(self, datasets, conv_channels, fc_channels, mfc_channels,
-                 batch_size, nr_epochs, logdir):
+                 batch_size, nr_epochs, logdir, settings):
         self.datasets = self.Datasets(*datasets)
         logger.info(f'Got {len(self.datasets.train)} training examples and '
                     f'{len(self.datasets.test)} test examples')
@@ -47,10 +47,12 @@ class Experiment:
         logger.info(f'Using pytorch device={self.device}')
 
         color_channels, *input_shape = self.datashape
-        encoder = ResidualAE(input_shape, conv_channels, fc_channels,
-                             color_channels=color_channels,
-                             latent_activation=nn.Sigmoid())
-        regressor = AutoregresionModule(fc_channels[-1], mfc_channels)
+        encoder = ResidualAE(
+            input_shape, conv_channels, fc_channels,
+            color_channels=color_channels, latent_activation=nn.Sigmoid())
+        regressor = AutoregresionModule(
+            fc_channels[-1], mfc_channels,
+            batchnorm=settings.get('autoregress_batchnorm', True))
         model = AutoregressiveLoss(encoder, regressor)
         self.model = model.to(self.device)
         self.optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
@@ -94,6 +96,8 @@ class Experiment:
         for x, in tqdm(self.loaders.train):
             x = x.to(self.device)
             losses = self.model(x)
+            losses = self.model.Result(
+                losses.reconstruction.mean(), losses.autoregressive.mean())
             loss = losses.reconstruction + losses.autoregressive
 
             loss_summary['loss/total'] += loss
@@ -110,15 +114,13 @@ class Experiment:
 
     def eval_epoch(self, epoch, summary_writer):
         self.model.eval()
-        _, imgs_pred = self.model.predict(
-            self.sample_images.train.to(self.device), retrecons=True)
+        imgs_pred = self.model.encoder(self.sample_images.train.to(self.device))
         img_pairs = zip(self.sample_images.train, imgs_pred.cpu())
         for n, img_pair in enumerate(img_pairs):
             merged = make_grid(list(img_pair))
             summary_writer.add_image(f'train_{n}', merged, epoch)
 
-        _, imgs_pred = self.model.predict(
-            self.sample_images.test.to(self.device), retrecons=True)
+        imgs_pred = self.model.encoder(self.sample_images.test.to(self.device))
         img_pairs = zip(self.sample_images.test, imgs_pred.cpu())
         for n, img_pair in enumerate(img_pairs):
             merged = make_grid(list(img_pair))
@@ -127,11 +129,11 @@ class Experiment:
     def run(self):
         summary_writer = SummaryWriter(self.logdir)
         restored_epoch = self.restore_latest(self.checkpoint_dir)
-        if restored_epoch <= 0:
-            # Batch size == 1 fails due to batch norm in training mode
-            self.model.eval()
-            dummy_input = torch.Tensor(1, *self.datashape).to(self.device)
-            summary_writer.add_graph(self.model, dummy_input)
+        #  if restored_epoch <= 0:
+        #      # Batch size == 1 fails due to batch norm in training mode
+        #      self.model.eval()
+        #      dummy_input = torch.Tensor(1, *self.datashape).to(self.device)
+        #      summary_writer.add_graph(self.model, dummy_input)
 
         self.eval_epoch(0, summary_writer)
         epochs = tqdm(range(restored_epoch + 1, self.nr_epochs + 1),
@@ -171,4 +173,5 @@ def mnist(logdir):
         mfc_channels=[32, 32 ,32 ,32, 100],
         batch_size=64,
         nr_epochs=50,
-        logdir=logdir).run()
+        logdir=logdir,
+        settings={'autoregress_batchnorm': False}).run()

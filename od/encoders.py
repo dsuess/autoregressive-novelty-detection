@@ -96,6 +96,7 @@ class ResidualAE(nn.Module):
 
         self.input_shape = (color_channels, *image_size)
         with torch.no_grad():
+            self.conv_encoder.eval()
             dummy_input = torch.Tensor(1, *self.input_shape)
             dummy_output = self.conv_encoder(dummy_input)
         self.intermediate_size = dummy_output.shape[1:]
