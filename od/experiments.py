@@ -9,6 +9,7 @@ import matplotlib.pyplot as pl
 import numpy as np
 import od
 import torch
+import torchvision as tv
 from od.datasets import Split
 from od.utils import logger
 from sklearn import metrics
@@ -170,7 +171,6 @@ class Experiment:
             roc_score = metrics.roc_auc_score(losses.test_known, -losses.test)
             summary_writer.add_scalar('metrics/roc_auc', roc_score, epoch)
 
-
     def run(self, keep_every_ckpt=True):
         summary_writer = SummaryWriter(self.logdir)
         restored_epoch = self.restore_latest(self.checkpoint_dir)
@@ -200,17 +200,21 @@ def experiments():
     pass
 
 
+MNIST_SETTINGS = {
+    'conv_channels': [32, 64],
+    'fc_channels': [64],
+    'mfc_channels': [32, 32 ,32 ,32, 100],
+    'batch_size': 64,
+    'nr_epochs': 50}
+
+
 @experiments.command()
 @click.option('--logdir', required=True, type=WRITE_DIRECTORY)
 def mnist(logdir):
-    Experiment(
-        datasets=od.mnist_novelty_dataset(novel_classes={3, 5, 8}),
-        conv_channels=[32, 64],
-        fc_channels=[64],
-        mfc_channels=[32, 32 ,32 ,32, 100],
-        batch_size=64,
-        nr_epochs=50,
-        logdir=logdir).run()
+    transforms = [tv.transforms.RandomAffine(degrees=20, shear=20)]
+    datasets = od.MNIST.load_split('/home/daniel/tmp/mnist', {1, 2, 3},
+                                   download=True, transforms=transforms)
+    Experiment(datasets=datasets, logdir=logdir, **MNIST_SETTINGS).run()
 
 
 @experiments.command(name='mnist-all')
@@ -219,17 +223,14 @@ def mnist_all(logdir):
     logdir = Path(logdir)
     logdir.mkdir(exist_ok=True)
     result = dict()
+    transforms = [tv.transforms.RandomAffine(degrees=20, shear=20)]
 
     for i in range(10):
         novel_classes = set(range(10)).difference({i})
-        experiment = Experiment(
-            datasets=od.mnist_novelty_dataset(novel_classes=novel_classes),
-            conv_channels=[32, 64],
-            fc_channels=[64],
-            mfc_channels=[32, 32 ,32 ,32, 100],
-            batch_size=64,
-            nr_epochs=50,
-            logdir=logdir / f'only_{i}')
+        datasets = od.MNIST.load_split('/home/daniel/tmp/mnist', {i},
+                                       download=True, transforms=transforms)
+        experiment = Experiment(datasets=datasets,
+                                logdir=logdir / f'only_{i}', **MNIST_SETTINGS)
         experiment.run(keep_every_ckpt=False)
 
         losses = experiment._compute_eval_losses()

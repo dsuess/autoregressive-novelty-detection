@@ -47,4 +47,8 @@ def render_mpl_figure(figure=None, close_figure=True, channel_order='CHW'):
     return image
 
 
+def isin(ar1, ar2):
+    return (ar1[..., None] == ar2).any(-1)
+
+
 logger = get_default_logger('AND')

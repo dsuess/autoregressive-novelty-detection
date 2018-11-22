@@ -1,47 +1,73 @@
 import functools as ft
+import os
+from collections import namedtuple
 from operator import add
 from pathlib import Path
 from time import sleep
-from collections import namedtuple
 
 import mnist
 import numpy as np
 import torch
+import torchvision as tv
 from torch.utils.data import TensorDataset
 
-from .utils import logger
+from .utils import logger, isin
+from PIL import Image
 
-__all__ = ['Split', 'mnist_novelty_dataset']
+__all__ = ['Split', 'MNIST']
 
 
 Split = namedtuple('Split', 'train, test')
 
 
-def mnist_novelty_dataset(*, novel_digits=None):
-    # we have to normalize to [0, 1] since output layer uses sigmoid
-    images = Split(mnist.train_images() / 255, mnist.test_images() / 255)
-    labels = Split(mnist.train_labels(), mnist.test_labels())
+class MNIST(tv.datasets.MNIST):
+    def __init__(self, root, training_classes, train=True, transform=None, download=False):
+        self.root = root
+        self.transform = transform
 
-    novel_digits = set() if novel_digits is None else novel_digits
-    novel_digits = np.array(list(novel_digits), dtype=labels.train.dtype)
-    exclude = np.isin(labels.train, novel_digits)
+        if download:
+            self.download()
+        if not self._check_exists():
+            raise RuntimeError('Dataset not found.')
 
-    images = Split(
-        train=images.train[~exclude, ][:, None],
-        test=np.concatenate([images.train[exclude], images.test])[:, None])
+        path = self.training_file if train else self.test_file
+        data, targets = torch.load(
+            os.path.join(self.root, self.processed_folder, path))
+        training_classes = torch.Tensor(list(training_classes)).to(targets.dtype)
+        is_known = isin(targets, training_classes)
 
-    is_known_test = ~np.isin(labels.test, novel_digits)
-    is_known_test = np.concatenate([np.zeros(sum(exclude), dtype=bool), is_known_test])
-    is_known = Split(
-        train=np.ones(len(images.train), dtype=np.uint8),
-        test=is_known_test.astype(np.uint8))
+        if train:
+            self.data = data[is_known.nonzero()][:, 0]
+            self.targets = torch.ones(len(self.data)).to(targets.dtype)
+        else:
+            self.data = data
+            self.targets = is_known
 
-    result = Split(
-        train=TensorDataset(torch.Tensor(images.train), torch.Tensor(is_known.train)),
-        test=TensorDataset(torch.Tensor(images.test), torch.Tensor(is_known.test)))
-    logger.info('Created dataset with:')
-    logger.info(f'    - {len(result.train)} training examples')
-    logger.info(f'    - {len(result.test)} test examples')
-    logger.info(f'    - {len(result.train) + np.sum(is_known_test)} known examples')
-    logger.info(f'    - {np.sum(~is_known_test)} unknown examples')
-    return result
+    def __getitem__(self, index):
+        img, target = self.data[index], self.targets[index]
+        img = Image.fromarray(img.numpy(), mode='L')
+
+        if self.transform is not None:
+            img = self.transform(img)
+
+        return img, target
+
+    def __len__(self):
+        return len(self.data)
+
+    def __repr__(self):
+        fmt_str = 'Dataset ' + self.__class__.__name__ + '\n'
+        fmt_str += '    Number of datapoints: {}\n'.format(self.__len__())
+        fmt_str += '    Number of positive examples: {}'.format(self.targets.sum())
+        return fmt_str
+
+    @classmethod
+    def load_split(cls, *args, transforms=None, **kwargs):
+        transforms = list(transforms) if transforms is not None else []
+        train_transform = tv.transforms.Compose(
+            transforms + [tv.transforms.ToTensor()])
+        test_transform = tv.transforms.Compose([tv.transforms.ToTensor()])
+        datasets = Split(
+            cls(*args, train=True, transform=train_transform, **kwargs),
+            cls(*args, train=False, transform=test_transform, **kwargs))
+        return datasets
