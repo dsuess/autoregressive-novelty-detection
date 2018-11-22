@@ -29,7 +29,9 @@ class Experiment:
     Datasets = namedtuple('Datasets', 'train, test')
 
     def __init__(self, datasets, conv_channels, fc_channels, mfc_channels,
-                 batch_size, nr_epochs, logdir, settings, ar_weight):
+                 batch_size, nr_epochs, logdir, settings, ar_weight,
+                 encoder_decay):
+        pl.style.use('ggplot')
         self.datasets = self.Datasets(*datasets)
         logger.info(f'Got {len(self.datasets.train)} training examples and '
                     f'{len(self.datasets.test)} test examples')
@@ -53,9 +55,12 @@ class Experiment:
             fc_channels[-1], mfc_channels,
             batchnorm=settings.get('autoregress_batchnorm', True))
         model = od.AutoregressiveLoss(encoder, regressor)
+        print(model)
+
         self.model = model.to(self.device)
         self.optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
         self.ar_weight = ar_weight
+        self.encoder_decay = encoder_decay
 
         Path(logdir).mkdir(exist_ok=True)
         self.nr_epochs = nr_epochs
@@ -106,6 +111,12 @@ class Experiment:
 
             self.optimizer.zero_grad()
             loss.backward()
+
+            if self.encoder_decay is not None:
+                for param in self.model.encoder.parameters():
+                    param.grad *= self.encoder_decay**epoch
+                summary_writer.add_scalar(
+                    'loss/encoder_decay', self.encoder_decay**epoch, epoch)
             self.optimizer.step()
 
         nr_examples = len(self.datasets.train)
@@ -118,7 +129,6 @@ class Experiment:
         img_merged = (make_grid(list(pair), nrow=1) for pair in img_pairs)
         all_images = make_grid(list(img_merged), nrow=len(sample_images))
         return all_images
-
 
     def eval_epoch(self, epoch, summary_writer):
         self.model.eval()
@@ -135,14 +145,19 @@ class Experiment:
                 [self.model.predict(x.to(self.device)).to('cpu').numpy()
                  for x, in self.loaders.test])
 
-            fig = pl.figure(0, figsize=(10, 10))
-            pl.hist(train_losses, bins=100, density=True)
-            pl.hist(test_losses, alpha=0.5, bins=100, density=True)
+            fig = pl.figure(0, figsize=(6, 6))
+            pl.hist(train_losses, bins=100, density=True, label='train')
+            pl.hist(test_losses, alpha=0.5, bins=100, density=True, label='test')
+            pl.title('Loss Histogram')
+            pl.xlabel('Autoreg. Loss')
+            pl.legend()
             rendered_fig = od.utils.render_mpl_figure()
             summary_writer.add_image('loss_histogram', rendered_fig, epoch)
 
             overlap = od.utils.sample_distribution_overlap(train_losses, test_losses)
-            summary_writer.add_scalar('histogram_overlap', overlap, epoch)
+            summary_writer.add_scalar('metrics/histogram_overlap', overlap, epoch)
+            summary_writer.add_scalar('metrics/train_loss', np.mean(train_losses), epoch)
+            summary_writer.add_scalar('metrics/test_loss', np.mean(test_losses), epoch)
 
 
     def run(self):
@@ -187,5 +202,6 @@ def mnist(logdir):
         batch_size=64,
         nr_epochs=50,
         logdir=logdir,
-        settings={'autoregress_batchnorm': False},
-        ar_weight=10).run()
+        settings={'autoregress_batchnorm': True},
+        ar_weight=10,
+        encoder_decay=0.9).run()
