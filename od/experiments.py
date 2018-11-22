@@ -105,9 +105,10 @@ class Experiment:
                 losses.reconstruction.mean(), losses.autoregressive.mean())
             loss = losses.reconstruction + self.ar_weight * losses.autoregressive
 
-            loss_summary['loss/total'] += loss
-            loss_summary['loss/reconstruction'] += losses.reconstruction
-            loss_summary['loss/autoregressive'] += losses.autoregressive
+            nr_examples = x.size(0)
+            loss_summary['loss/total'] += loss * nr_examples
+            loss_summary['loss/reconstruction'] += losses.reconstructios * nr_examples
+            loss_summary['loss/autoregressive'] += losses.autoregressive * nr_examples
 
             self.optimizer.zero_grad()
             loss.backward()
@@ -115,13 +116,16 @@ class Experiment:
             if self.encoder_decay is not None:
                 for param in self.model.encoder.parameters():
                     param.grad *= self.encoder_decay**epoch
-                summary_writer.add_scalar(
-                    'loss/encoder_decay', self.encoder_decay**epoch, epoch)
             self.optimizer.step()
 
         nr_examples = len(self.datasets.train)
         for name, value in loss_summary.items():
             summary_writer.add_scalar(name, value / nr_examples, epoch)
+
+        if self.encoder_decay is not None:
+            summary_writer.add_scalar(
+                'loss/encoder_decay', self.encoder_decay**epoch, epoch)
+
 
     def make_example_images(self, sample_images):
         imgs_pred = self.model.encoder(sample_images.to(self.device))
@@ -203,5 +207,5 @@ def mnist(logdir):
         nr_epochs=50,
         logdir=logdir,
         settings={'autoregress_batchnorm': True},
-        ar_weight=10,
-        encoder_decay=0.9).run()
+        ar_weight=1,
+        encoder_decay=None).run()
