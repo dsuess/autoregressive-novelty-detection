@@ -246,7 +246,7 @@ CIFAR10_SETTINGS = {
     'fc_channels': [256, 64],
     'mfc_channels': [32, 32 ,32 ,32, 100],
     'batch_size': 64,
-    'nr_epochs': 50}
+    'nr_epochs': 200}
 
 
 @experiments.command()
@@ -256,3 +256,27 @@ def cifar10(logdir):
     datasets = od.CIFAR10.load_split('/home/daniel/tmp/mnist', {1, 2, 3},
                                      download=True, transforms=transforms)
     Experiment(datasets=datasets, logdir=logdir, **CIFAR10_SETTINGS).run()
+
+
+@experiments.command(name='cifar10-all')
+@click.option('--logdir', required=True, type=WRITE_DIRECTORY)
+def cifar10_all(logdir):
+    logdir = Path(logdir)
+    logdir.mkdir(exist_ok=True)
+    result = dict()
+    transforms = [tv.transforms.RandomAffine(degrees=20, shear=20)]
+
+    for i in range(10):
+        novel_classes = set(range(10)).difference({i})
+        datasets = od.CIFAR10.load_split('/home/daniel/tmp/mnist', {1, 2, 3},
+                                        download=True, transforms=transforms)
+        experiment = Experiment(datasets=datasets, logdir=logdir / f'only_{i}',
+                                **CIFAR10_SETTINGS)
+        experiment.run(keep_every_ckpt=False)
+
+        losses = experiment._compute_eval_losses()
+        roc_score = metrics.roc_auc_score(losses.test_known, -losses.test)
+        result[i] = roc_score
+
+    with open(logdir / 'result.json', 'w') as buf:
+        json.dump(result, buf)
