@@ -239,3 +239,20 @@ def mnist_all(logdir):
 
     with open(logdir / 'result.json', 'w') as buf:
         json.dump(result, buf)
+
+
+CIFAR10_SETTINGS = {
+    'conv_channels': [64, 128, 256],
+    'fc_channels': [256, 64],
+    'mfc_channels': [32, 32 ,32 ,32, 100],
+    'batch_size': 64,
+    'nr_epochs': 50}
+
+
+@experiments.command()
+@click.option('--logdir', required=True, type=WRITE_DIRECTORY)
+def cifar10(logdir):
+    transforms = [tv.transforms.RandomAffine(degrees=20, shear=20)]
+    datasets = od.CIFAR10.load_split('/home/daniel/tmp/mnist', {1, 2, 3},
+                                     download=True, transforms=transforms)
+    Experiment(datasets=datasets, logdir=logdir, **CIFAR10_SETTINGS).run()
