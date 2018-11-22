@@ -1,3 +1,4 @@
+import json
 import os
 from collections import namedtuple
 from multiprocessing import cpu_count
@@ -8,15 +9,15 @@ import matplotlib.pyplot as pl
 import numpy as np
 import od
 import torch
-from od.utils import logger
 from od.datasets import Split
+from od.utils import logger
+from sklearn import metrics
 from tensorboardX import SummaryWriter
 from torch import nn
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 from torchvision.utils import make_grid
 from tqdm import tqdm, trange
-from sklearn import metrics
 
 WRITE_DIRECTORY = click.Path(file_okay=False, resolve_path=True, writable=True)
 
@@ -35,17 +36,17 @@ def sample_examples(dataset, size, should_be_known):
 class Experiment:
 
     TestLosses = namedtuple('TestLosses', 'known, unknown, test, test_known')
+    ar_weight = 1.0
 
     def __init__(self, datasets, conv_channels, fc_channels, mfc_channels,
-                 batch_size, nr_epochs, logdir, settings, ar_weight,
-                 encoder_decay):
+                 batch_size, nr_epochs, logdir):
         pl.style.use('ggplot')
         self.datasets = Split(*datasets)
         self.loaders = Split(
             DataLoader(self.datasets.train, batch_size=batch_size,
-                       shuffle=True, num_workers=2 * cpu_count()),
+                       shuffle=True, num_workers=cpu_count()),
             DataLoader(self.datasets.test, batch_size=batch_size,
-                       num_workers=2 * cpu_count()))
+                       num_workers=cpu_count()))
         self.sample_images = Split(
             sample_examples(self.datasets.train, size=10, should_be_known=True),
             sample_examples(self.datasets.test, size=10, should_be_known=False))
@@ -57,16 +58,11 @@ class Experiment:
         encoder = od.ResidualAE(
             input_shape, conv_channels, fc_channels,
             color_channels=color_channels, latent_activation=nn.Sigmoid())
-        regressor = od.AutoregresionModule(
-            fc_channels[-1], mfc_channels,
-            batchnorm=settings.get('autoregress_batchnorm', True))
+        regressor = od.AutoregresionModule(fc_channels[-1], mfc_channels)
         model = od.AutoregressiveLoss(encoder, regressor)
-        print(model)
 
         self.model = model.to(self.device)
         self.optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-        self.ar_weight = ar_weight
-        self.encoder_decay = encoder_decay
 
         Path(logdir).mkdir(exist_ok=True)
         self.nr_epochs = nr_epochs
@@ -118,19 +114,11 @@ class Experiment:
 
             self.optimizer.zero_grad()
             loss.backward()
-
-            if self.encoder_decay is not None:
-                for param in self.model.encoder.parameters():
-                    param.grad *= self.encoder_decay**epoch
             self.optimizer.step()
 
         nr_examples = len(self.datasets.train)
         for name, value in loss_summary.items():
             summary_writer.add_scalar(name, value / nr_examples, epoch)
-
-        if self.encoder_decay is not None:
-            summary_writer.add_scalar(
-                'loss/encoder_decay', self.encoder_decay**epoch, epoch)
 
     def make_example_images(self, sample_images):
         imgs_pred = self.model.encoder(sample_images.to(self.device))
@@ -143,10 +131,10 @@ class Experiment:
         train_losses = np.concatenate(
             [self.model.predict(x.to(self.device)).to('cpu').numpy()
              for x, _ in self.loaders.train])
-        test_losses = np.concatenate(
-            [self.model.predict(x.to(self.device)).to('cpu').numpy()
-                for x, _ in self.loaders.test])
-        is_known = np.concatenate([y for _, y in self.loaders.test]).astype(bool)
+        data = [(self.model.predict(x.to(self.device)).to('cpu').numpy(), y.numpy())
+                for x, y in self.loaders.test]
+        test_losses = np.concatenate([x for x, _ in data])
+        is_known = np.concatenate([y for _, y in data]).astype(bool)
 
         known_lossses = np.concatenate([train_losses, test_losses[is_known]])
         unknown_losses = test_losses[~is_known]
@@ -183,7 +171,7 @@ class Experiment:
             summary_writer.add_scalar('metrics/roc_auc', roc_score, epoch)
 
 
-    def run(self):
+    def run(self, keep_every_ckpt=True):
         summary_writer = SummaryWriter(self.logdir)
         restored_epoch = self.restore_latest(self.checkpoint_dir)
         self.eval_epoch(0, summary_writer)
@@ -198,7 +186,11 @@ class Experiment:
             state = {
                 'epoch': epoch, 'model': self.model.state_dict(),
                 'optimizer': self.optimizer.state_dict()}
-            filename = self.checkpoint_dir / f'checkpoint_{epoch:04d}.pt'
+            if keep_every_ckpt:
+                filename = self.checkpoint_dir / f'checkpoint_{epoch:04d}.pt'
+            else:
+                filename = self.checkpoint_dir / 'checkpoint.pt'
+
             logger.info(f'Saving checkpoint to {filename}')
             torch.save(state, filename)
 
@@ -210,10 +202,7 @@ def experiments():
 
 @experiments.command()
 @click.option('--logdir', required=True, type=WRITE_DIRECTORY)
-@click.option('--ar-weight', default=1.0, type=float)
-@click.option('--batchnorm', default=True, type=bool)
-@click.option('--encoder-decay', type=float)
-def mnist(logdir, ar_weight, batchnorm, encoder_decay):
+def mnist(logdir):
     Experiment(
         datasets=od.mnist_novelty_dataset(novel_classes={3, 5, 8}),
         conv_channels=[32, 64],
@@ -221,7 +210,31 @@ def mnist(logdir, ar_weight, batchnorm, encoder_decay):
         mfc_channels=[32, 32 ,32 ,32, 100],
         batch_size=64,
         nr_epochs=50,
-        logdir=logdir,
-        settings={'autoregress_batchnorm': batchnorm},
-        ar_weight=ar_weight,
-        encoder_decay=encoder_decay).run()
+        logdir=logdir).run()
+
+
+@experiments.command(name='mnist-all')
+@click.option('--logdir', required=True, type=WRITE_DIRECTORY)
+def mnist_all(logdir):
+    logdir = Path(logdir)
+    logdir.mkdir(exist_ok=True)
+    result = dict()
+
+    for i in range(10):
+        novel_classes = set(range(10)).difference({i})
+        experiment = Experiment(
+            datasets=od.mnist_novelty_dataset(novel_classes=novel_classes),
+            conv_channels=[32, 64],
+            fc_channels=[64],
+            mfc_channels=[32, 32 ,32 ,32, 100],
+            batch_size=64,
+            nr_epochs=50,
+            logdir=logdir / f'only_{i}')
+        experiment.run(keep_every_ckpt=False)
+
+        losses = experiment._compute_eval_losses()
+        roc_score = metrics.roc_auc_score(losses.test_known, -losses.test)
+        result[i] = roc_score
+
+    with open(logdir / 'result.json', 'w') as buf:
+        json.dump(result, buf)
