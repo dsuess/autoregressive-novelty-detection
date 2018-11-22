@@ -16,6 +16,7 @@ from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 from torchvision.utils import make_grid
 from tqdm import tqdm, trange
+from sklearn import metrics
 
 WRITE_DIRECTORY = click.Path(file_okay=False, resolve_path=True, writable=True)
 
@@ -32,6 +33,8 @@ def sample_examples(dataset, size, should_be_known):
 
 
 class Experiment:
+
+    TestLosses = namedtuple('TestLosses', 'known, unknown, test, test_known')
 
     def __init__(self, datasets, conv_channels, fc_channels, mfc_channels,
                  batch_size, nr_epochs, logdir, settings, ar_weight,
@@ -147,7 +150,8 @@ class Experiment:
 
         known_lossses = np.concatenate([train_losses, test_losses[is_known]])
         unknown_losses = test_losses[~is_known]
-        return known_lossses, unknown_losses
+        return self.TestLosses(known_lossses, unknown_losses, test_losses, is_known)
+
 
     def eval_epoch(self, epoch, summary_writer):
         self.model.eval()
@@ -157,10 +161,10 @@ class Experiment:
             examples = self.make_example_images(self.sample_images.test)
             summary_writer.add_image('test_images', examples, epoch)
 
-            known_losses, unknown_losses = self._compute_eval_losses()
+            losses = self._compute_eval_losses()
             fig = pl.figure(0, figsize=(6, 6))
-            pl.hist(known_losses, bins=100, density=True, label='known')
-            pl.hist(unknown_losses, alpha=0.5, bins=100, density=True,
+            pl.hist(losses.known, bins=100, density=True, label='known')
+            pl.hist(losses.unknown, alpha=0.5, bins=100, density=True,
                     label='unknown')
             pl.title('Loss Histogram')
             pl.xlabel('Autoreg. Loss')
@@ -169,10 +173,15 @@ class Experiment:
             summary_writer.add_image('loss_histogram', rendered_fig, epoch)
 
             overlap = od.utils.sample_distribution_overlap(
-                known_losses, unknown_losses)
+                losses.known, losses.unknown)
             summary_writer.add_scalar('metrics/histogram_overlap', overlap, epoch)
-            summary_writer.add_scalar('metrics/train_loss', np.mean(known_losses), epoch)
-            summary_writer.add_scalar('metrics/test_loss', np.mean(unknown_losses), epoch)
+            summary_writer.add_scalar('metrics/train_loss', np.mean(losses.known), epoch)
+            summary_writer.add_scalar('metrics/test_loss', np.mean(losses.unknown), epoch)
+
+            # "-" because autoreg. losses approximates neg. log. likelihood
+            roc_score = metrics.roc_auc_score(losses.test_known, -losses.test)
+            summary_writer.add_scalar('metrics/roc_auc', roc_score, epoch)
+
 
     def run(self):
         summary_writer = SummaryWriter(self.logdir)
@@ -206,7 +215,7 @@ def experiments():
 @click.option('--encoder-decay', type=float)
 def mnist(logdir, ar_weight, batchnorm, encoder_decay):
     Experiment(
-        datasets=od.mnist_novelty_dataset(novel_digits={3, 5, 8}),
+        datasets=od.mnist_novelty_dataset(novel_classes={3, 5, 8}),
         conv_channels=[32, 64],
         fc_channels=[64],
         mfc_channels=[32, 32 ,32 ,32, 100],
