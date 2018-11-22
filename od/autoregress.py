@@ -30,8 +30,8 @@ class AutoregressiveLinear(nn.Linear):
             mask[j, :, j + int(mask_type == 'B'):] = 0
 
     def forward(self, x):
-        self.weight.data *= self.mask
-        y = super().forward(x.view(-1, *self.in_shape))
+        y = x.view(-1, *self.in_shape)
+        y = nn.functional.linear(y, self.mask * self.weight, self.bias)
         return y.view(-1, *self.out_shape)
 
     def __repr__(self):
@@ -50,7 +50,8 @@ class AutoregressiveLayer(nn.Module):
         self.out_shape = self.linear.out_shape
 
         if batchnorm:
-            self.batchnorm = nn.BatchNorm1d(*self.in_shape)
+            # TODO Find out why track_running_stats=True doesn't work well here
+            self.batchnorm = nn.BatchNorm1d(*self.in_shape, track_running_stats=False)
         else:
             self.batchnorm = None
 
@@ -67,18 +68,19 @@ class AutoregressiveLayer(nn.Module):
 
 class AutoregresionModule(nn.Module):
     def __init__(self, dim, mfc_layers, activation=nn.LeakyReLU,
-                 **kwargs):
+                 batchnorm=True):
         super().__init__()
         self.mfc_layers = list(mfc_layers)
         dimensions = list(zip([1] + self.mfc_layers, self.mfc_layers))
         activation_fns = [activation] * (len(dimensions) - 1) + [None]
+        batchnorm = [batchnorm] * (len(dimensions) - 1) + [False]
         mask_types = ['A'] + ['B'] * (len(dimensions) - 1)
-        configuration = zip(dimensions, activation_fns, mask_types)
+        configuration = zip(dimensions, activation_fns, mask_types, batchnorm)
 
         self.layers = nn.Sequential(
             *[AutoregressiveLayer(dim, d_in, d_out, activation=fn,
-                                  mask_type=mt, **kwargs)
-              for (d_in, d_out), fn, mt in configuration])
+                                  batchnorm=bn, mask_type=mt)
+              for (d_in, d_out), fn, mt, bn in configuration])
 
     @property
     def bins(self):
