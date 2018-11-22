@@ -115,13 +115,14 @@ class AutoregressiveLoss(nn.Module):
 
     def forward(self, x):
         latent = self.encoder.encode(x)
+        autoreg_loss = self._autoreg_loss(latent)
+
         reconstruction = self.encoder.decode(latent)
         reconstruction_loss = nn.functional.mse_loss(
             x, reconstruction, reduction='none')
         reconstruction_loss = reconstruction_loss.view(reconstruction_loss.size(0), -1)
         reconstruction_loss = reconstruction_loss.sum(dim=1)
 
-        autoreg_loss = self._autoreg_loss(latent)
         return self.Result(reconstruction_loss, autoreg_loss)
 
     def predict(self, x):
