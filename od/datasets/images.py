@@ -14,12 +14,10 @@ import torchvision as tv
 from PIL import Image
 from torch.utils.data import TensorDataset
 
-from .utils import isin, logger
+from ..utils import isin, logger
+from .utils import Split
 
-__all__ = ['Split', 'MNIST', 'CIFAR10']
-
-
-Split = namedtuple('Split', 'train, test')
+__all__ = ['MNIST', 'CIFAR10']
 
 
 class NoveltyDetectionDataset(abc.ABC):
