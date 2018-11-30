@@ -1,5 +1,6 @@
 import json
 import os
+import tempfile
 from collections import namedtuple
 from multiprocessing import cpu_count
 from pathlib import Path
@@ -19,6 +20,8 @@ from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 from torchvision.utils import make_grid
 from tqdm import tqdm, trange
+
+__all__ = ['Experiment', 'CIFAR10_SETTINGS', 'MNIST_SETTINGS']
 
 WRITE_DIRECTORY = click.Path(file_okay=False, resolve_path=True, writable=True)
 
@@ -208,37 +211,39 @@ MNIST_SETTINGS = {
     'nr_epochs': 50}
 
 
-@experiments.command()
+@experiments.command(name='mnist')
 @click.option('--logdir', required=True, type=WRITE_DIRECTORY)
-def mnist(logdir):
+@click.option('--download-dir', required=False, type=WRITE_DIRECTORY)
+@click.option('--batch', is_flag=True)
+def mnist_all(logdir, download_dir, batch):
     transforms = [tv.transforms.RandomAffine(degrees=20, shear=20)]
-    datasets = od.MNIST.load_split('/home/daniel/tmp/mnist', {1, 2, 3},
-                                   download=True, transforms=transforms)
-    Experiment(datasets=datasets, logdir=logdir, **MNIST_SETTINGS).run()
+    if download_dir is None:
+        download_dir = Path(tempfile.gettempdir()) / 'mnist'
 
+    if batch:
+        logdir = Path(logdir)
+        logdir.mkdir(exist_ok=True)
+        result = dict()
 
-@experiments.command(name='mnist-all')
-@click.option('--logdir', required=True, type=WRITE_DIRECTORY)
-def mnist_all(logdir):
-    logdir = Path(logdir)
-    logdir.mkdir(exist_ok=True)
-    result = dict()
-    transforms = [tv.transforms.RandomAffine(degrees=20, shear=20)]
+        for i in range(10):
+            novel_classes = set(range(10)).difference({i})
+            datasets = od.MNIST.load_split(download_dir, {i}, download=True,
+                                           transforms=transforms)
+            experiment = Experiment(datasets=datasets,
+                                    logdir=logdir / f'only_{i}', **MNIST_SETTINGS)
+            experiment.run(keep_every_ckpt=False)
 
-    for i in range(10):
-        novel_classes = set(range(10)).difference({i})
-        datasets = od.MNIST.load_split('/home/daniel/tmp/mnist', {i},
-                                       download=True, transforms=transforms)
-        experiment = Experiment(datasets=datasets,
-                                logdir=logdir / f'only_{i}', **MNIST_SETTINGS)
-        experiment.run(keep_every_ckpt=False)
+            losses = experiment._compute_eval_losses()
+            roc_score = metrics.roc_auc_score(losses.test_known, -losses.test)
+            result[i] = roc_score
 
-        losses = experiment._compute_eval_losses()
-        roc_score = metrics.roc_auc_score(losses.test_known, -losses.test)
-        result[i] = roc_score
+        with open(logdir / 'result.json', 'w') as buf:
+            json.dump(result, buf)
 
-    with open(logdir / 'result.json', 'w') as buf:
-        json.dump(result, buf)
+    else:
+        datasets = od.MNIST.load_split('/home/daniel/tmp/mnist', {1, 2, 3},
+                                    download=True, transforms=transforms)
+        Experiment(datasets=datasets, logdir=logdir, **MNIST_SETTINGS).run()
 
 
 CIFAR10_SETTINGS = {
@@ -246,37 +251,38 @@ CIFAR10_SETTINGS = {
     'fc_channels': [256, 64],
     'mfc_channels': [32, 32 ,32 ,32, 100],
     'batch_size': 64,
-    'nr_epochs': 200}
+    'nr_epochs': 80}
 
 
-@experiments.command()
+@experiments.command(name='cifar10')
 @click.option('--logdir', required=True, type=WRITE_DIRECTORY)
-def cifar10(logdir):
-    transforms = [tv.transforms.RandomAffine(degrees=20, shear=20)]
-    datasets = od.CIFAR10.load_split('/home/daniel/tmp/mnist', {1, 2, 3},
-                                     download=True, transforms=transforms)
-    Experiment(datasets=datasets, logdir=logdir, **CIFAR10_SETTINGS).run()
+@click.option('--download-dir', required=False, type=WRITE_DIRECTORY)
+@click.option('--batch', is_flag=True)
+def cifar10(logdir, download_dir, batch):
+    if download_dir is None:
+        download_dir = Path(tempfile.gettempdir()) / 'cifar10'
 
+    if batch:
+        logdir = Path(logdir)
+        logdir.mkdir(exist_ok=True)
+        result = dict()
+        #  transforms = [tv.transforms.RandomAffine(degrees=20, shear=20)]
 
-@experiments.command(name='cifar10-all')
-@click.option('--logdir', required=True, type=WRITE_DIRECTORY)
-def cifar10_all(logdir):
-    logdir = Path(logdir)
-    logdir.mkdir(exist_ok=True)
-    result = dict()
-    transforms = [tv.transforms.RandomAffine(degrees=20, shear=20)]
+        for i in range(10):
+            novel_classes = set(range(10)).difference({i})
+            datasets = od.CIFAR10.load_split(download_dir, {i}, download=True)
+            experiment = Experiment(datasets=datasets, logdir=logdir / f'only_{i}',
+                                    **CIFAR10_SETTINGS)
+            experiment.run(keep_every_ckpt=False)
 
-    for i in range(10):
-        novel_classes = set(range(10)).difference({i})
+            losses = experiment._compute_eval_losses()
+            roc_score = metrics.roc_auc_score(losses.test_known, -losses.test)
+            result[i] = roc_score
+
+        with open(logdir / 'result.json', 'w') as buf:
+            json.dump(result, buf)
+
+    else:
         datasets = od.CIFAR10.load_split('/home/daniel/tmp/mnist', {1, 2, 3},
-                                        download=True, transforms=transforms)
-        experiment = Experiment(datasets=datasets, logdir=logdir / f'only_{i}',
-                                **CIFAR10_SETTINGS)
-        experiment.run(keep_every_ckpt=False)
-
-        losses = experiment._compute_eval_losses()
-        roc_score = metrics.roc_auc_score(losses.test_known, -losses.test)
-        result[i] = roc_score
-
-    with open(logdir / 'result.json', 'w') as buf:
-        json.dump(result, buf)
+                                        download=True)
+        Experiment(datasets=datasets, logdir=logdir, **CIFAR10_SETTINGS).run()
