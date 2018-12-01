@@ -1,3 +1,4 @@
+import abc
 import json
 import os
 import tempfile
@@ -12,14 +13,13 @@ import od
 import torch
 import torchvision as tv
 from od.datasets import Split
-from od.utils import logger
+from od.utils import logger, mse_loss
 from sklearn import metrics
 from tensorboardX import SummaryWriter
 from torch import nn
 from torch.utils.data import DataLoader
-from torchvision import datasets, transforms
 from torchvision.utils import make_grid
-from tqdm import tqdm, trange
+from tqdm import tqdm
 
 __all__ = ['Experiment', 'CIFAR10_SETTINGS', 'MNIST_SETTINGS']
 
@@ -42,41 +42,30 @@ class Experiment:
     TestLosses = namedtuple('TestLosses', 'known, unknown, test, test_known')
     ar_weight = 1.0
 
-    def __init__(self, datasets, conv_channels, fc_channels, mfc_channels,
-                 batch_size, nr_epochs, logdir):
+    def __init__(self, datasets, epochs, logdir):
         pl.style.use('ggplot')
         self.datasets = Split(*datasets)
-        self.loaders = Split(
-            DataLoader(self.datasets.train, batch_size=batch_size,
-                       shuffle=True, num_workers=cpu_count()),
-            DataLoader(self.datasets.test, batch_size=batch_size,
-                       num_workers=cpu_count()))
-        self.sample_images = Split(
-            sample_examples(self.datasets.train, size=10, should_be_known=True),
-            sample_examples(self.datasets.test, size=10, should_be_known=False))
+        self.loaders = self.get_loaders()
 
         self.device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
         logger.info(f'Using pytorch device={self.device}')
 
-        color_channels, *input_shape = self.datashape
-        encoder = od.ResidualAE(
-            input_shape, conv_channels, fc_channels,
-            color_channels=color_channels, latent_activation=nn.Sigmoid())
-        regressor = od.AutoregresionModule(fc_channels[-1], mfc_channels)
-        model = od.AutoregressiveLoss(encoder, regressor)
-
-        self.model = model.to(self.device)
-        self.optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+        self.model = self.get_model().to(self.device)
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-3)
 
         Path(logdir).mkdir(exist_ok=True)
-        self.nr_epochs = nr_epochs
+        self.epochs = epochs
         self.logdir = logdir
         self.checkpoint_dir = Path(logdir) / 'checkpoints'
         self.checkpoint_dir.mkdir(exist_ok=True)
 
-    @property
-    def datashape(self):
-        return self.datasets.train[0][0].shape
+    @abc.abstractmethod
+    def get_loaders(self):
+        pass
+
+    @abc.abstractstaticmethod
+    def get_model():
+        pass
 
     def restore(self, ckpt_path):
         logger.info(f'Restoring model from {ckpt_path}')
@@ -124,6 +113,48 @@ class Experiment:
         for name, value in loss_summary.items():
             summary_writer.add_scalar(name, value / nr_examples, epoch)
 
+    def eval_epoch(self, epoch, summary_writer):
+        self.model.eval()
+
+    def run(self, keep_every_ckpt=True):
+        summary_writer = SummaryWriter(self.logdir)
+        restored_epoch = self.restore_latest(self.checkpoint_dir)
+        self.eval_epoch(0, summary_writer)
+        epochs = tqdm(range(restored_epoch + 1, self.epochs + 1),
+                      total=self.epochs, initial=restored_epoch)
+        epochs.refresh()
+        for epoch in epochs:
+            epochs.update(epoch)
+            self.train_epoch(epoch, summary_writer)
+            self.eval_epoch(epoch, summary_writer)
+
+            state = {
+                'epoch': epoch, 'model': self.model.state_dict(),
+                'optimizer': self.optimizer.state_dict()}
+            if keep_every_ckpt:
+                filename = self.checkpoint_dir / f'checkpoint_{epoch:04d}.pt'
+            else:
+                filename = self.checkpoint_dir / 'checkpoint.pt'
+
+            logger.info(f'Saving checkpoint to {filename}')
+            torch.save(state, filename)
+
+
+class ImageClassifierExperiment(Experiment):
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.sample_images = Split(
+            sample_examples(self.datasets.train, size=10, should_be_known=True),
+            sample_examples(self.datasets.test, size=10, should_be_known=False))
+
+    def get_loaders(self):
+        return Split(
+            DataLoader(self.datasets.train, batch_size=self.batch_size,
+                       shuffle=True, num_workers=cpu_count()),
+            DataLoader(self.datasets.test, batch_size=self.batch_size,
+                       num_workers=cpu_count()))
+
     def make_example_images(self, sample_images):
         imgs_pred = self.model.encoder(sample_images.to(self.device))
         img_pairs = zip(sample_images, imgs_pred.cpu())
@@ -131,7 +162,7 @@ class Experiment:
         all_images = make_grid(list(img_merged), nrow=len(sample_images))
         return all_images
 
-    def _compute_eval_losses(self):
+    def compute_eval_losses(self):
         train_losses = np.concatenate(
             [self.model.predict(x.to(self.device)).to('cpu').numpy()
              for x, _ in self.loaders.train])
@@ -146,15 +177,16 @@ class Experiment:
 
 
     def eval_epoch(self, epoch, summary_writer):
-        self.model.eval()
+        super().eval_epoch(epoch, summary_writer)
+
         with torch.no_grad():
             examples = self.make_example_images(self.sample_images.train)
             summary_writer.add_image('train_images', examples, epoch)
             examples = self.make_example_images(self.sample_images.test)
             summary_writer.add_image('test_images', examples, epoch)
 
-            losses = self._compute_eval_losses()
-            fig = pl.figure(0, figsize=(6, 6))
+            losses = self.compute_eval_losses()
+            pl.figure(0, figsize=(6, 6))
             pl.hist(losses.known, bins=100, density=True, label='known')
             pl.hist(losses.unknown, alpha=0.5, bins=100, density=True,
                     label='unknown')
@@ -174,28 +206,6 @@ class Experiment:
             roc_score = metrics.roc_auc_score(losses.test_known, -losses.test)
             summary_writer.add_scalar('metrics/roc_auc', roc_score, epoch)
 
-    def run(self, keep_every_ckpt=True):
-        summary_writer = SummaryWriter(self.logdir)
-        restored_epoch = self.restore_latest(self.checkpoint_dir)
-        self.eval_epoch(0, summary_writer)
-        epochs = tqdm(range(restored_epoch + 1, self.nr_epochs + 1),
-                      total=self.nr_epochs, initial=restored_epoch)
-        epochs.refresh()
-        for epoch in epochs:
-            epochs.update(epoch)
-            self.train_epoch(epoch, summary_writer)
-            self.eval_epoch(epoch, summary_writer)
-
-            state = {
-                'epoch': epoch, 'model': self.model.state_dict(),
-                'optimizer': self.optimizer.state_dict()}
-            if keep_every_ckpt:
-                filename = self.checkpoint_dir / f'checkpoint_{epoch:04d}.pt'
-            else:
-                filename = self.checkpoint_dir / 'checkpoint.pt'
-
-            logger.info(f'Saving checkpoint to {filename}')
-            torch.save(state, filename)
 
 
 @click.group()
@@ -203,19 +213,34 @@ def experiments():
     pass
 
 
-MNIST_SETTINGS = {
-    'conv_channels': [32, 64],
-    'fc_channels': [64],
-    'mfc_channels': [32, 32 ,32 ,32, 100],
-    'batch_size': 64,
-    'nr_epochs': 50}
+class MNISTExperiment(ImageClassifierExperiment):
+
+    @property
+    def batch_size(self):
+        return 64
+
+    @staticmethod
+    def get_model():
+        encoder = od.ResidualAE(
+            input_shape=(28, 28),
+            encoder_sizes=[32, 64],
+            fc_sizes=[64],
+            color_channels=1,
+            latent_activation=nn.Sigmoid())
+
+        regressor = od.AutoregresionModule(
+            dim=64,
+            mfc_layers=[32, 32, 32, 32, 100])
+
+        return od.AutoregressiveLoss(encoder, regressor)
 
 
 @experiments.command(name='mnist')
 @click.option('--logdir', required=True, type=WRITE_DIRECTORY)
 @click.option('--download-dir', required=False, type=WRITE_DIRECTORY)
+@click.option('--epochs', default=50, type=int)
 @click.option('--batch', is_flag=True)
-def mnist_all(logdir, download_dir, batch):
+def mnist(logdir, download_dir, epochs, batch):
     transforms = [tv.transforms.RandomAffine(degrees=20, shear=20)]
     if download_dir is None:
         download_dir = Path(tempfile.gettempdir()) / 'mnist'
@@ -226,14 +251,13 @@ def mnist_all(logdir, download_dir, batch):
         result = dict()
 
         for i in range(10):
-            novel_classes = set(range(10)).difference({i})
-            datasets = od.MNIST.load_split(download_dir, {i}, download=True,
-                                           transforms=transforms)
-            experiment = Experiment(datasets=datasets,
-                                    logdir=logdir / f'only_{i}', **MNIST_SETTINGS)
+            datasets = od.datasets.MNIST.load_split(
+                download_dir, {i}, download=True, transforms=transforms)
+            experiment = MNISTExperiment(
+                datasets=datasets, logdir=logdir / f'only_{i}', epochs=epochs)
             experiment.run(keep_every_ckpt=False)
 
-            losses = experiment._compute_eval_losses()
+            losses = experiment.compute_eval_losses()
             roc_score = metrics.roc_auc_score(losses.test_known, -losses.test)
             result[i] = roc_score
 
@@ -241,24 +265,38 @@ def mnist_all(logdir, download_dir, batch):
             json.dump(result, buf)
 
     else:
-        datasets = od.MNIST.load_split('/home/daniel/tmp/mnist', {1, 2, 3},
-                                    download=True, transforms=transforms)
-        Experiment(datasets=datasets, logdir=logdir, **MNIST_SETTINGS).run()
+        datasets = od.datasets.MNIST.load_split(
+            download_dir, {1, 2, 3}, download=True, transforms=transforms)
+        MNISTExperiment(datasets=datasets, logdir=logdir, epochs=epochs).run()
 
 
-CIFAR10_SETTINGS = {
-    'conv_channels': [64, 128, 256],
-    'fc_channels': [256, 64],
-    'mfc_channels': [32, 32 ,32 ,32, 100],
-    'batch_size': 64,
-    'nr_epochs': 80}
+class CIFAR10Experiment(ImageClassifierExperiment):
 
+    @property
+    def batch_size(self):
+        return 64
+
+    @staticmethod
+    def get_model():
+        encoder = od.ResidualAE(
+            input_shape=(32, 32),
+            encoder_sizes=[64, 128, 256],
+            fc_sizes=[256, 64],
+            color_channels=3,
+            latent_activation=nn.Sigmoid())
+
+        regressor = od.AutoregresionModule(
+            dim=64,
+            mfc_layers=[32, 32, 32, 32, 100])
+
+        return od.AutoregressiveLoss(encoder, regressor)
 
 @experiments.command(name='cifar10')
 @click.option('--logdir', required=True, type=WRITE_DIRECTORY)
 @click.option('--download-dir', required=False, type=WRITE_DIRECTORY)
+@click.option('--epochs', default=50, type=int)
 @click.option('--batch', is_flag=True)
-def cifar10(logdir, download_dir, batch):
+def cifar10(logdir, download_dir, epochs, batch):
     if download_dir is None:
         download_dir = Path(tempfile.gettempdir()) / 'cifar10'
 
@@ -266,16 +304,15 @@ def cifar10(logdir, download_dir, batch):
         logdir = Path(logdir)
         logdir.mkdir(exist_ok=True)
         result = dict()
-        #  transforms = [tv.transforms.RandomAffine(degrees=20, shear=20)]
 
         for i in range(10):
-            novel_classes = set(range(10)).difference({i})
-            datasets = od.CIFAR10.load_split(download_dir, {i}, download=True)
-            experiment = Experiment(datasets=datasets, logdir=logdir / f'only_{i}',
-                                    **CIFAR10_SETTINGS)
+            datasets = od.datasets.CIFAR10.load_split(
+                download_dir, {i}, download=True)
+            experiment = CIFAR10Experiment(
+                datasets=datasets, logdir=logdir / f'only_{i}', epochs=epochs)
             experiment.run(keep_every_ckpt=False)
 
-            losses = experiment._compute_eval_losses()
+            losses = experiment.compute_eval_losses()
             roc_score = metrics.roc_auc_score(losses.test_known, -losses.test)
             result[i] = roc_score
 
@@ -283,6 +320,6 @@ def cifar10(logdir, download_dir, batch):
             json.dump(result, buf)
 
     else:
-        datasets = od.CIFAR10.load_split('/home/daniel/tmp/mnist', {1, 2, 3},
-                                        download=True)
-        Experiment(datasets=datasets, logdir=logdir, **CIFAR10_SETTINGS).run()
+        datasets = od.datasets.CIFAR10.load_split(
+            download_dir, {1, 2, 3}, download=True)
+        CIFAR10Experiment(datasets=datasets, logdir=logdir, epochs=epochs).run()

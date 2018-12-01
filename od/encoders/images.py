@@ -75,13 +75,15 @@ class DecoderBlock(nn.Module):
 
 class ResidualAE(nn.Module):
 
-    def __init__(self, input_shape, conv_sizes, fc_sizes, *, color_channels=3,
-                 latent_activation=None):
+    def __init__(self, input_shape, encoder_sizes, fc_sizes, *, color_channels=3,
+                 latent_activation=None, decoder_sizes=None):
         super().__init__()
 
-        conv_dims = list(zip([color_channels, *conv_sizes], conv_sizes))
-        self.conv_encoder = nn.Sequential(
-            *[EncoderBlock(d_in, d_out) for d_in, d_out in conv_dims])
+        decoder_sizes = list(decoder_sizes) if decoder_sizes is not None \
+            else list(reversed(encoder_sizes))
+
+        conv_dims = list(zip([color_channels, *encoder_sizes], encoder_sizes))
+        self.conv_encoder = nn.Sequential(*[EncoderBlock(*d) for d in conv_dims])
 
         self.input_shape = (color_channels, *input_shape)
         with torch.no_grad():
@@ -93,15 +95,15 @@ class ResidualAE(nn.Module):
 
         fc_dims = list(zip([self.first_fc_size, *fc_sizes], fc_sizes))
         self.fc_encoder = nn.Sequential(
-            *[fc_layer(d_in, d_out, activation=nn.LeakyReLU())
-              for d_in, d_out in fc_dims[:-1]],
+            *[fc_layer(*d, activation=nn.LeakyReLU()) for d in fc_dims[:-1]],
             fc_layer(*fc_dims[-1], activation=latent_activation, batchnorm=False))
 
         self.fc_decoder = nn.Sequential(
             *[fc_layer(d_out, d_in, activation=nn.LeakyReLU())
               for d_in, d_out in reversed(fc_dims)])
+        conv_dims = list(zip(decoder_sizes, [*(decoder_sizes[1:]), color_channels]))
         self.conv_decoder = nn.Sequential(
-            *[DecoderBlock(d_in, d_out) for d_out, d_in in reversed(conv_dims)],
+            *[DecoderBlock(*d) for d in conv_dims],
             nn.Sigmoid())
 
     def encode(self, x):
