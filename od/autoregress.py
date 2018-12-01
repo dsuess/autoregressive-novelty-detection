@@ -11,8 +11,7 @@ __all__ = ['AutoregresionModule', 'AutoregressiveLoss']
 
 # TODO Optimize axis alignment to get rid of permute in loss
 class AutoregressiveLinear(nn.Linear):
-    def __init__(self, dim, in_features, out_features, *, mask_type,
-                 batchnorm=True, activation=None, **kwargs):
+    def __init__(self, dim, in_features, out_features, *, mask_type, **kwargs):
         super().__init__(dim * in_features, dim * out_features, **kwargs)
         assert mask_type in {'A', 'B'}
         self.dim = dim
@@ -34,11 +33,12 @@ class AutoregressiveLinear(nn.Linear):
         y = nn.functional.linear(y, self.mask * self.weight, self.bias)
         return y.view(-1, *self.out_shape)
 
-    def __repr__(self):
-        return f'AutoregressiveLinear(dim={self.dim}, ' \
-            f'in_features={self.in_features}, ' \
-            f'out_features={self.out_features}, ' \
-            f'mask_type={self.mask_type})'
+    def _get_name(self):
+        return 'AutoregressiveLinear'
+
+    def extra_repr(self):
+        extra_repr = super().extra_repr()
+        return f'dim={self.dim}, {extra_repr}, mask_type={self.mask_type}'
 
 
 class AutoregressiveLayer(nn.Module):
