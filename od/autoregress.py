@@ -4,7 +4,7 @@ import numpy as np
 import torch
 from torch import nn
 
-from .utils import logger
+from .utils import logger, mse_loss
 
 __all__ = ['AutoregresionModule', 'AutoregressiveLoss']
 
@@ -118,8 +118,7 @@ class AutoregressiveLoss(nn.Module):
         autoreg_loss = self._autoreg_loss(latent)
 
         reconstruction = self.encoder.decode(latent)
-        reconstruction_loss = nn.functional.mse_loss(
-            x, reconstruction, reduction='none')
+        reconstruction_loss = mse_loss(x, reconstruction, reduction='none')
         reconstruction_loss = reconstruction_loss.view(reconstruction_loss.size(0), -1)
         reconstruction_loss = reconstruction_loss.sum(dim=1)
 

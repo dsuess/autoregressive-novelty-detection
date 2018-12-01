@@ -64,4 +64,18 @@ def isin(ar1, ar2):
     return (ar1[..., None] == ar2).any(-1)
 
 
+def mse_loss(x, y, reduction='elementwise_mean'):
+    # Fixes bug for reduction='none' in pytorch < 1.0
+    d = (x - y).pow(2)
+
+    if reduction == 'none':
+        return d
+    elif reduction == 'elementwise_mean':
+        return d.mean()
+    elif reduction == 'sum':
+        return d.sum()
+    else:
+        raise ValueError(f'reduction={reduction} invalid')
+
+
 logger = get_default_logger('AND')
