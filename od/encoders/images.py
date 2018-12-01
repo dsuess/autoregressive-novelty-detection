@@ -1,8 +1,8 @@
-import abc
-
 import torch
 from torch import nn
 import numpy as np
+
+from od.utils import fc_layer
 
 
 __all__ = ['ResidualAE']
@@ -42,7 +42,7 @@ class EncoderBlock(nn.Module):
 
 class DecoderBlock(nn.Module):
 
-    def __init__(self, in_channels, out_channels, raw_output=False):
+    def __init__(self, in_channels, out_channels):
         super().__init__()
 
         self.residual_path = nn.Sequential(
@@ -73,20 +73,9 @@ class DecoderBlock(nn.Module):
         return self.residual_path(x) + self.conv_path(x)
 
 
-def fc_layer(in_features, out_features, activation=None, batchnorm=True):
-    layers = [nn.Linear(in_features, out_features)]
-
-    if activation is not None:
-        layers += [activation]
-    if batchnorm:
-        layers += [nn.BatchNorm1d(out_features)]
-
-    return nn.Sequential(*layers)
-
-
 class ResidualAE(nn.Module):
 
-    def __init__(self, image_size, conv_sizes, fc_sizes, *, color_channels=3,
+    def __init__(self, input_shape, conv_sizes, fc_sizes, *, color_channels=3,
                  latent_activation=None):
         super().__init__()
 
@@ -94,7 +83,7 @@ class ResidualAE(nn.Module):
         self.conv_encoder = nn.Sequential(
             *[EncoderBlock(d_in, d_out) for d_in, d_out in conv_dims])
 
-        self.input_shape = (color_channels, *image_size)
+        self.input_shape = (color_channels, *input_shape)
         with torch.no_grad():
             self.conv_encoder.eval()
             dummy_input = torch.Tensor(1, *self.input_shape)
