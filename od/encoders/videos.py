@@ -2,8 +2,6 @@ import torch
 from torch import nn
 import numpy as np
 
-from od.utils import fc_layer
-
 
 __all__ = ['ResidualVideoAE']
 
@@ -24,7 +22,8 @@ class CausalConv3d(nn.Conv3d):
         super().__init__(in_channels, out_channels, kernel_size,
                          padding=padding, **kwargs)
 
-    def _get_name(self):
+    @staticmethod
+    def _get_name():
         return 'CausalConv3d'
 
     def forward(self, x):
@@ -111,13 +110,40 @@ class DecoderBlock(nn.Module):
         return self.residual_path(x) + self.conv_path(x)
 
 
+class ParallelBatchNorm1d(nn.BatchNorm1d):
+
+    def forward(self, x):
+        x_reshaped = x.view(-1, x.shape[2])
+        y_reshaped = super().forward(x_reshaped)
+        y = y_reshaped.view(*x.shape)
+        return y
+
+    @staticmethod
+    def _get_name():
+        return 'ParallelBatchNorm1d'
+
+
+def fc_layer(in_features, out_features, activation=None, batchnorm=True):
+    layers = [nn.Linear(in_features, out_features)]
+
+    if activation is not None:
+        layers += [activation]
+    if batchnorm:
+        layers += [ParallelBatchNorm1d(out_features)]
+
+    return nn.Sequential(*layers)
+
+
+
 class ResidualVideoAE(nn.Module):
 
-    def __init__(self, input_shape, conv_sizes, fc_sizes, *, color_channels=3,
-                 latent_activation=None):
+    def __init__(self, input_shape, encoder_sizes, fc_sizes, *, decoder_sizes=None,
+                 color_channels=3, latent_activation=None):
         super().__init__()
+        decoder_sizes = decoder_sizes if decoder_sizes is not None \
+            else list(reversed(encoder_sizes))
 
-        conv_dims = list(zip([color_channels, *conv_sizes], conv_sizes))
+        conv_dims = list(zip([color_channels, *encoder_sizes], encoder_sizes))
         self.conv_encoder = nn.Sequential(
             *[EncoderBlock(d_in, d_out) for d_in, d_out in conv_dims])
 
@@ -126,37 +152,52 @@ class ResidualVideoAE(nn.Module):
             self.conv_encoder.eval()
             dummy_input = torch.Tensor(1, *self.input_shape)
             dummy_output = self.conv_encoder(dummy_input)
-        self.intermediate_size = dummy_output.shape[1:]
-        self.first_fc_size = np.prod(self.intermediate_size)
+        _, c, t, h, w = dummy_output.shape
+        self.intermediate_shape = (t, c, h, w)
+        self.first_fc_size = (t, c * h * w)
 
-        fc_dims = list(zip([self.first_fc_size, *fc_sizes], fc_sizes))
-        self.fc_encoder = nn.Sequential(
-            *[fc_layer(d_in, d_out, activation=nn.LeakyReLU())
-              for d_in, d_out in fc_dims[:-1]],
-            fc_layer(*fc_dims[-1], activation=latent_activation, batchnorm=False))
+        fc_dims = list(zip([self.first_fc_size[1], *fc_sizes], fc_sizes))
+
+        if fc_dims:
+            self.fc_encoder = nn.Sequential(
+                *[fc_layer(d_in, d_out, activation=nn.LeakyReLU())
+                for d_in, d_out in fc_dims[:-1]],
+                fc_layer(*fc_dims[-1], activation=latent_activation,
+                         batchnorm=False))
+        else:
+            self.fc_encoder = nn.Sequential()
 
         self.fc_decoder = nn.Sequential(
             *[fc_layer(d_out, d_in, activation=nn.LeakyReLU())
               for d_in, d_out in reversed(fc_dims)])
+        conv_dims = list(zip(decoder_sizes, [*decoder_sizes[1:], color_channels]))
         self.conv_decoder = nn.Sequential(
-            *[DecoderBlock(d_in, d_out) for d_out, d_in in reversed(conv_dims)],
+            *[DecoderBlock(d_in, d_out) for d_in, d_out in conv_dims],
             nn.Sigmoid())
 
     def encode(self, x):
+        """
+        >>> model = ResidualVideoAE((16, 64, 64), [4], [], color_channels=4)
+        >>> x = torch.randn(2, 4, 16, 64, 64)
+        >>> y = model.encode(x)
+        >>> tuple(y.shape)
+        (2, 8, 4096)
+        """
         y = self.conv_encoder(x)
-        y = y.view(-1, self.first_fc_size)
+        # Group together CWH indices, but keep time index separate
+        y = y.permute(0, 2, 1, 3, 4).contiguous().view(-1, *self.first_fc_size)
         y = self.fc_encoder(y)
         return y
 
     def decode(self, x):
         y = self.fc_decoder(x)
-        y = y.view(-1, *self.intermediate_size)
-        y = self.conv_decoder(y)
-        return y
+        y = y.view(-1, *self.intermediate_shape).permute(0, 2, 1, 3, 4)
+        y1 = self.conv_decoder(y)
+        return y1
 
     def forward(self, x):
         """
-        >>> model = ResidualVideoAE((16, 64, 64), [32], [5], color_channels=4)
+        >>> model = ResidualVideoAE((16, 64, 64), [10], [5], color_channels=4)
         >>> x = torch.randn(2, 4, 16, 64, 64)
         >>> y = model(x)
         >>> tuple(y.shape)

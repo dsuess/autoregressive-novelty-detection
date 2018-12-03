@@ -10,17 +10,6 @@ from torch import nn
 __all__ = ['get_default_logger', 'logger']
 
 
-def fc_layer(in_features, out_features, activation=None, batchnorm=True):
-    layers = [nn.Linear(in_features, out_features)]
-
-    if activation is not None:
-        layers += [activation]
-    if batchnorm:
-        layers += [nn.BatchNorm1d(out_features)]
-
-    return nn.Sequential(*layers)
-
-
 def get_default_logger(name):
     logger = logging.getLogger(name)
     logging.basicConfig(level=os.environ.get('LOGLEVEL', 'INFO'))

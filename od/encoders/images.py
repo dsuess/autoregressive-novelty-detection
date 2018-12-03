@@ -2,8 +2,6 @@ import torch
 from torch import nn
 import numpy as np
 
-from od.utils import fc_layer
-
 
 __all__ = ['ResidualAE']
 
@@ -71,6 +69,17 @@ class DecoderBlock(nn.Module):
         (1, 10, 32, 32)
         """
         return self.residual_path(x) + self.conv_path(x)
+
+
+def fc_layer(in_features, out_features, activation=None, batchnorm=True):
+    layers = [nn.Linear(in_features, out_features)]
+
+    if activation is not None:
+        layers += [activation]
+    if batchnorm:
+        layers += [nn.BatchNorm1d(out_features)]
+
+    return nn.Sequential(*layers)
 
 
 class ResidualAE(nn.Module):
