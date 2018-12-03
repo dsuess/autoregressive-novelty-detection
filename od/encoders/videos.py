@@ -47,16 +47,17 @@ class CausalConv3d(nn.Conv3d):
 
 class EncoderBlock(nn.Module):
 
-    def __init__(self, in_channels, out_channels):
+    def __init__(self, in_channels, out_channels, temporal_stride=2):
         super().__init__()
 
         self.residual_path = nn.Sequential(
-            nn.Conv3d(in_channels, out_channels, kernel_size=1, stride=2),
+            nn.Conv3d(in_channels, out_channels, kernel_size=1,
+                      stride=(temporal_stride, 2, 2)),
             nn.BatchNorm3d(out_channels))
 
         self.conv_path = nn.Sequential(
-            CausalConv3d(in_channels, out_channels, kernel_size=3, stride=2,
-                         padding=1),
+            CausalConv3d(in_channels, out_channels, kernel_size=3,
+                         stride=(temporal_stride, 2, 2), padding=1),
             nn.LeakyReLU(),
             nn.BatchNorm3d(out_channels),
             CausalConv3d(out_channels, out_channels, kernel_size=3, stride=1,
@@ -79,17 +80,18 @@ class EncoderBlock(nn.Module):
 
 class DecoderBlock(nn.Module):
 
-    def __init__(self, in_channels, out_channels):
+    def __init__(self, in_channels, out_channels, temporal_stride=2):
         super().__init__()
 
         self.residual_path = nn.Sequential(
             nn.ConvTranspose3d(in_channels, out_channels, kernel_size=1,
-                               stride=2, output_padding=1),
+                               stride=(temporal_stride, 2, 2), output_padding=1),
             nn.BatchNorm3d(out_channels))
 
         self.conv_path = nn.Sequential(
             nn.ConvTranspose3d(in_channels, out_channels, kernel_size=3,
-                               stride=2, padding=1, output_padding=1),
+                               stride=(temporal_stride, 2, 2), padding=1,
+                               output_padding=1),
             nn.LeakyReLU(),
             nn.BatchNorm3d(out_channels),
             nn.Conv3d(out_channels, out_channels, kernel_size=3, stride=1,
@@ -137,15 +139,19 @@ def fc_layer(in_features, out_features, activation=None, batchnorm=True):
 
 class ResidualVideoAE(nn.Module):
 
-    def __init__(self, input_shape, encoder_sizes, fc_sizes, *, decoder_sizes=None,
-                 color_channels=3, latent_activation=None):
+    def __init__(self, input_shape, encoder_sizes, fc_sizes, *, temporal_strides,
+                 decoder_sizes=None, color_channels=3, latent_activation=None):
         super().__init__()
         decoder_sizes = decoder_sizes if decoder_sizes is not None \
             else list(reversed(encoder_sizes))
 
         conv_dims = list(zip([color_channels, *encoder_sizes], encoder_sizes))
+        temporal_strides = list(temporal_strides)
+        assert len(temporal_strides) == len(conv_dims)
+
         self.conv_encoder = nn.Sequential(
-            *[EncoderBlock(d_in, d_out) for d_in, d_out in conv_dims])
+            *[EncoderBlock(d_in, d_out, temporal_stride=ts)
+              for (d_in, d_out), ts in zip(conv_dims, temporal_strides)])
 
         self.input_shape = (color_channels, *input_shape)
         with torch.no_grad():
@@ -157,11 +163,10 @@ class ResidualVideoAE(nn.Module):
         self.first_fc_size = (t, c * h * w)
 
         fc_dims = list(zip([self.first_fc_size[1], *fc_sizes], fc_sizes))
-
         if fc_dims:
             self.fc_encoder = nn.Sequential(
                 *[fc_layer(d_in, d_out, activation=nn.LeakyReLU())
-                for d_in, d_out in fc_dims[:-1]],
+                  for d_in, d_out in fc_dims[:-1]],
                 fc_layer(*fc_dims[-1], activation=latent_activation,
                          batchnorm=False))
         else:
@@ -172,7 +177,8 @@ class ResidualVideoAE(nn.Module):
               for d_in, d_out in reversed(fc_dims)])
         conv_dims = list(zip(decoder_sizes, [*decoder_sizes[1:], color_channels]))
         self.conv_decoder = nn.Sequential(
-            *[DecoderBlock(d_in, d_out) for d_in, d_out in conv_dims],
+            *[DecoderBlock(d_in, d_out, temporal_stride=ts)
+              for (d_in, d_out), ts in zip(conv_dims, reversed(temporal_strides))],
             nn.Sigmoid())
 
     def encode(self, x):
@@ -192,8 +198,8 @@ class ResidualVideoAE(nn.Module):
     def decode(self, x):
         y = self.fc_decoder(x)
         y = y.view(-1, *self.intermediate_shape).permute(0, 2, 1, 3, 4)
-        y1 = self.conv_decoder(y)
-        return y1
+        y = self.conv_decoder(y)
+        return y
 
     def forward(self, x):
         """
