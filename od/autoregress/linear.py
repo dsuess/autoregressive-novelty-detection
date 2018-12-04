@@ -4,7 +4,7 @@ import numpy as np
 import torch
 from torch import nn
 
-from .utils import logger, mse_loss
+from od.utils import logger, mse_loss
 
 __all__ = ['AutoregresionModule', 'AutoregressiveLoss']
 
@@ -33,6 +33,7 @@ class AutoregressiveLinear(nn.Linear):
         y = nn.functional.linear(y, self.mask * self.weight, self.bias)
         return y.view(-1, *self.out_shape)
 
+    @staticmethod
     def _get_name(self):
         return 'AutoregressiveLinear'
 
