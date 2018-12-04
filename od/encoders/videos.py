@@ -183,7 +183,7 @@ class ResidualVideoAE(nn.Module):
 
     def encode(self, x):
         """
-        >>> model = ResidualVideoAE((16, 64, 64), [4], [], color_channels=4)
+        >>> model = ResidualVideoAE((16, 64, 64), [4], [], color_channels=4, temporal_strides=[2])
         >>> x = torch.randn(2, 4, 16, 64, 64)
         >>> y = model.encode(x)
         >>> tuple(y.shape)
@@ -203,7 +203,7 @@ class ResidualVideoAE(nn.Module):
 
     def forward(self, x):
         """
-        >>> model = ResidualVideoAE((16, 64, 64), [10], [5], color_channels=4)
+        >>> model = ResidualVideoAE((16, 64, 64), [10], [5], color_channels=4, temporal_strides=[2])
         >>> x = torch.randn(2, 4, 16, 64, 64)
         >>> y = model(x)
         >>> tuple(y.shape)
