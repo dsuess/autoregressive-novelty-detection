@@ -6,7 +6,8 @@ from torch import nn
 
 from od.utils import logger, mse_loss
 
-__all__ = ['AutoregresionModule', 'AutoregressiveLoss']
+
+__all__ = ['AutoregressiveLoss', 'AutoregressiveLayer']
 
 
 # TODO Optimize axis alignment to get rid of permute in loss
@@ -67,33 +68,7 @@ class AutoregressiveLayer(nn.Module):
         return y
 
 
-class AutoregresionModule(nn.Module):
-    def __init__(self, dim, mfc_layers, activation=nn.LeakyReLU,
-                 batchnorm=True):
-        super().__init__()
-        self.mfc_layers = list(mfc_layers)
-        dimensions = list(zip([1] + self.mfc_layers, self.mfc_layers))
-        activation_fns = [activation] * (len(dimensions) - 1) + [None]
-        batchnorm = [batchnorm] * (len(dimensions) - 1) + [False]
-        mask_types = ['A'] + ['B'] * (len(dimensions) - 1)
-        configuration = zip(dimensions, activation_fns, mask_types, batchnorm)
-
-        self.layers = nn.Sequential(
-            *[AutoregressiveLayer(dim, d_in, d_out, activation=fn,
-                                  batchnorm=bn, mask_type=mt)
-              for (d_in, d_out), fn, mt, bn in configuration])
-
-    @property
-    def bins(self):
-        return self.mfc_layers[-1]
-
-    def forward(self, x):
-        return self.layers(x)
-
-
 class AutoregressiveLoss(nn.Module):
-
-    Result = namedtuple('Result', 'reconstruction, autoregressive')
 
     def __init__(self, encoder, regressor, **kwargs):
         super().__init__(**kwargs)
@@ -123,7 +98,7 @@ class AutoregressiveLoss(nn.Module):
         reconstruction_loss = reconstruction_loss.view(reconstruction_loss.size(0), -1)
         reconstruction_loss = reconstruction_loss.sum(dim=1)
 
-        return self.Result(reconstruction_loss, autoreg_loss)
+        return {'reconstruction': reconstruction_loss, 'autoregressive': autoreg_loss}
 
     def predict(self, x):
         with torch.no_grad():

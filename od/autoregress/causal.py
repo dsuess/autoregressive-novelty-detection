@@ -3,8 +3,10 @@ import torch
 from torch import nn
 
 from od.utils import logger, mse_loss
+from .linear import AutoregressiveLoss
 
-#  __all__ = ['AutoregresionModule', 'AutoregressiveLoss']
+
+__all__ = ['AutoregressiveVideoLoss', 'AutoregressiveConvLayer']
 
 
 class AutoregressiveConv(nn.Conv1d):
@@ -26,6 +28,8 @@ class AutoregressiveConv(nn.Conv1d):
 
     def forward(self, x):
         """
+        Input Shape: (batch, dim, in_features, time)
+
         >>> layer = AutoregressiveConv(5, 10, 20, mask_type='A')
         >>> x = torch.rand(1, 5, 10, 4)
         >>> y = layer(x)
@@ -42,10 +46,57 @@ class AutoregressiveConv(nn.Conv1d):
 
     @staticmethod
     def _get_name():
-        return 'AutoregressiveLinear'
+        return 'AutoregressiveConv'
 
     def extra_repr(self):
         return f'dim={self.dim}, in_features={self.in_features}, ' \
             f'out_features={self.out_features}, mask_type={self.mask_type}'
 
 
+class AutoregressiveConvLayer(nn.Module):
+    def __init__(self, *args, activation=None, batchnorm=True, **kwargs):
+        super().__init__()
+        self.conv = AutoregressiveConv(*args, **kwargs)
+        self.activation = activation() if activation is not None else None
+
+        if batchnorm:
+            size = self.conv.dim * self.conv.out_features
+            self.batchnorm = nn.BatchNorm1d(size, track_running_stats=False)
+        else:
+            self.batchnorm = None
+
+    def forward(self, x):
+        """
+        >>> layer = AutoregressiveConvLayer(5, 10, 20, mask_type='A', activation=nn.ReLU)
+        >>> x = torch.rand(1, 5, 10, 4)
+        >>> y = layer(x)
+        >>> tuple(y.shape)
+        (1, 5, 20, 4)
+        """
+        y = self.conv(x)
+        if self.activation is not None:
+            y = self.activation(y)
+        if self.batchnorm is not None:
+            shape = y.shape
+            y = y.view(shape[0], shape[1] * shape[2], shape[3])
+            y = self.batchnorm(y)
+            y = y.view(shape[0], shape[1], shape[2], shape[3])
+        return y
+
+
+class AutoregressiveVideoLoss(AutoregressiveLoss):
+
+    def _autoreg_loss(self, latent):
+        # move time axis to back as expected by regressor
+        # FIXME Change order in autoencoder to have time axis last
+        latent = latent.permute(0, 2, 1)
+        latent_binned = (latent * self.bins.float()).type(torch.int64)
+        latent_binned = latent_binned.clamp(0, self.bins - 1)
+        latent_binned = latent_binned
+        latent_binned_pred = self.regressor(
+            latent.view(latent.size(0), latent.size(1), 1, latent.size(2)))
+        latent_binned_pred = latent_binned_pred.permute(0, 2, 1, 3)
+
+        autoreg_loss = nn.functional.cross_entropy(
+            latent_binned_pred, latent_binned, reduction='none')
+        return autoreg_loss.mean(dim=2).mean(dim=1)
