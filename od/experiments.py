@@ -9,6 +9,7 @@ from pathlib import Path
 import click
 import matplotlib.pyplot as pl
 import numpy as np
+import nvvl
 import od
 import torch
 import torchvision as tv
@@ -29,11 +30,14 @@ WRITE_DIRECTORY = click.Path(file_okay=False, resolve_path=True, writable=True)
 def sample_examples(dataset, size, should_be_known):
     loader = DataLoader(dataset, shuffle=True, batch_size=1)
     result = []
-    for x, y in loader:
-        if y == should_be_known:
-            result.append(x)
-            if len(result) >= size:
-                break
+    for elem in loader:
+        if len(elem) == 1:
+            result.append(elem)
+        elif elem[1] == should_be_known:
+            result.append(elem[0])
+
+        if len(result) >= size:
+            break
     return torch.cat(result, dim=0)
 
 
@@ -42,9 +46,8 @@ class Experiment:
     TestLosses = namedtuple('TestLosses', 'known, unknown, test, test_known')
     ar_weight = 1.0
 
-    def __init__(self, datasets, epochs, logdir):
+    def __init__(self, epochs, logdir):
         pl.style.use('ggplot')
-        self.datasets = Split(*datasets)
         self.loaders = self.get_loaders()
 
         self.device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
@@ -93,17 +96,16 @@ class Experiment:
             'loss/reconstruction': torch.zeros(1, dtype=torch.float, device=self.device),
             'loss/autoregressive': torch.zeros(1, dtype=torch.float, device=self.device)}
 
-        for x, _ in tqdm(self.loaders.train):
+        for x in tqdm(self.loaders.train):
             x = x.to(self.device)
             losses = self.model(x)
-            losses = self.model.Result(
-                losses.reconstruction.mean(), losses.autoregressive.mean())
-            loss = losses.reconstruction + self.ar_weight * losses.autoregressive
+            losses = {key: val.mean() for key, val in losses.items()}
+            loss = losses['reconstruction'] + self.ar_weight * losses['autoregressive']
 
             nr_examples = x.size(0)
             loss_summary['loss/total'] += loss * nr_examples
-            loss_summary['loss/reconstruction'] += losses.reconstruction * nr_examples
-            loss_summary['loss/autoregressive'] += losses.autoregressive * nr_examples
+            loss_summary['loss/reconstruction'] += losses['reconstruction'] * nr_examples
+            loss_summary['loss/autoregressive'] += losses['autoregressive'] * nr_examples
 
             self.optimizer.zero_grad()
             loss.backward()
@@ -142,7 +144,8 @@ class Experiment:
 
 class ImageClassifierExperiment(Experiment):
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, datasets, *args, **kwargs):
+        self.datasets = Split(*datasets)
         super().__init__(*args, **kwargs)
         self.sample_images = Split(
             sample_examples(self.datasets.train, size=10, should_be_known=True),
@@ -165,7 +168,7 @@ class ImageClassifierExperiment(Experiment):
     def compute_eval_losses(self):
         train_losses = np.concatenate(
             [self.model.predict(x.to(self.device)).to('cpu').numpy()
-             for x, _ in self.loaders.train])
+             for x in self.loaders.train])
         data = [(self.model.predict(x.to(self.device)).to('cpu').numpy(), y.numpy())
                 for x, y in self.loaders.test]
         test_losses = np.concatenate([x for x, _ in data])
@@ -215,9 +218,7 @@ def experiments():
 
 class MNISTExperiment(ImageClassifierExperiment):
 
-    @property
-    def batch_size(self):
-        return 64
+    batch_size = 64
 
     @staticmethod
     def get_model():
@@ -230,7 +231,7 @@ class MNISTExperiment(ImageClassifierExperiment):
 
         regressor = od.AutoregresionModule(
             dim=64,
-            mfc_layers=[32, 32, 32, 32, 100])
+            layer_sizes=[32, 32, 32, 32, 100])
 
         return od.AutoregressiveLoss(encoder, regressor)
 
@@ -272,9 +273,7 @@ def mnist(logdir, download_dir, epochs, batch):
 
 class CIFAR10Experiment(ImageClassifierExperiment):
 
-    @property
-    def batch_size(self):
-        return 64
+    batch_size = 64
 
     @staticmethod
     def get_model():
@@ -287,7 +286,7 @@ class CIFAR10Experiment(ImageClassifierExperiment):
 
         regressor = od.AutoregresionModule(
             dim=64,
-            mfc_layers=[32, 32, 32, 32, 100])
+            layer_sizes=[32, 32, 32, 32, 100])
 
         return od.AutoregressiveLoss(encoder, regressor)
 
@@ -323,3 +322,68 @@ def cifar10(logdir, download_dir, epochs, batch):
         datasets = od.datasets.CIFAR10.load_split(
             download_dir, {1, 2, 3}, download=True)
         CIFAR10Experiment(datasets=datasets, logdir=logdir, epochs=epochs).run()
+
+
+# FIXME Clean up train code so we don't need this anymore
+class WrappedNVVL:
+
+    def __init__(self, loader, name='input'):
+        self.loader = loader
+        self.name = name
+
+    def __iter__(self):
+        return (elem[self.name].permute(0, 2, 1, 3, 4) for elem in self.loader)
+
+
+class ShanghaiTechExperiment(Experiment):
+
+    timesteps = 16
+    frame_shape = (256, 480)
+    batch_size = 8
+
+    def __init__(self, traindir, *args, **kwargs):
+        height, width = self.frame_shape
+        video_files = list(map(str, Path(traindir).glob('*.mp4')))
+        logger.info(f'Found {len(video_files)} video files in training set.')
+        processing = {
+            'input': nvvl.ProcessDesc(scale_width=width, scale_height=height)}
+        trainset = nvvl.VideoDataset(video_files, self.timesteps,
+                                     processing=processing, device_id=0)
+        self.datasets = Split(trainset, None)
+
+        super().__init__(*args, **kwargs)
+
+    def get_loaders(self):
+        return Split(
+            WrappedNVVL(nvvl.VideoLoader(
+                self.datasets.train, batch_size=self.batch_size, shuffle=True)),
+            None)
+
+    @classmethod
+    def get_model(cls):
+        encoder = od.ResidualVideoAE(
+            input_shape=(cls.timesteps, *cls.frame_shape),
+            encoder_sizes=[8, 16, 32, 64, 64],
+            decoder_sizes=[64, 32, 16, 8, 8],
+            temporal_strides=[2, 2, 1, 1, 1],
+            fc_sizes=[512, 64],
+            color_channels=3,
+            latent_activation=nn.Sigmoid())
+
+        regressor = od.AutoregresionModule(
+            dim=64,
+            layer_sizes=[32, 32, 32, 32, 100],
+            layer=od.AutoregressiveConvLayer)
+
+        model = od.AutoregressiveVideoLoss(encoder, regressor)
+        model = nn.DataParallel(model)
+        return model
+
+
+@experiments.command('shanghai-tech')
+@click.option('--logdir', required=True, type=WRITE_DIRECTORY)
+@click.option('--epochs', default=50, type=int)
+def shanghai_tech(logdir, epochs):
+    ShanghaiTechExperiment(
+        traindir='/home/daniel/data/shanghaitech/training/h264',
+        logdir=logdir, epochs=epochs).run()
