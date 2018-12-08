@@ -21,6 +21,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 from torchvision.utils import make_grid
 from tqdm import tqdm
+from od.distributed import DistributedDataParallel
 
 __all__ = ['Experiment', 'CIFAR10_SETTINGS', 'MNIST_SETTINGS']
 
@@ -44,6 +45,8 @@ def sample_examples(dataset, size, should_be_known):
 class Experiment:
 
     TestLosses = namedtuple('TestLosses', 'known, unknown, test, test_known')
+
+    re_weight = 1.0
     ar_weight = 1.0
 
     def __init__(self, epochs, logdir):
@@ -79,6 +82,13 @@ class Experiment:
         logger.info(f'Successfully restored at epoch={epoch}')
         return epoch
 
+    def save(self, ckpt_path, epoch):
+        state = {
+            'epoch': epoch, 'model': self.model.state_dict(),
+            'optimizer': self.optimizer.state_dict()}
+        logger.info(f'Saving checkpoint to {ckpt_path}')
+        torch.save(state, ckpt_path)
+
     def restore_latest(self, ckpt_dir):
         files = ckpt_dir.glob('*.pt')
 
@@ -89,27 +99,33 @@ class Experiment:
             return 0
         return self.restore(latest)
 
+    def train_step(self, x):
+        x = x.to(self.device)
+        losses = self.model(x)
+        losses = {key: val.mean() for key, val in losses.items()}
+        total_loss = self.re_weight * losses['reconstruction'] \
+            + self.ar_weight * losses['autoregressive']
+
+        self.optimizer.zero_grad()
+        total_loss.backward()
+        self.optimizer.step()
+        return total_loss, losses
+
     def train_epoch(self, epoch, summary_writer):
         self.model.train()
+
         loss_summary = {
             'loss/total': torch.zeros(1, dtype=torch.float, device=self.device),
             'loss/reconstruction': torch.zeros(1, dtype=torch.float, device=self.device),
             'loss/autoregressive': torch.zeros(1, dtype=torch.float, device=self.device)}
 
         for x in tqdm(self.loaders.train):
-            x = x.to(self.device)
-            losses = self.model(x)
-            losses = {key: val.mean() for key, val in losses.items()}
-            loss = losses['reconstruction'] + self.ar_weight * losses['autoregressive']
+            loss, losses = self.train_step(x)
 
             nr_examples = x.size(0)
             loss_summary['loss/total'] += loss * nr_examples
             loss_summary['loss/reconstruction'] += losses['reconstruction'] * nr_examples
             loss_summary['loss/autoregressive'] += losses['autoregressive'] * nr_examples
-
-            self.optimizer.zero_grad()
-            loss.backward()
-            self.optimizer.step()
 
         nr_examples = len(self.datasets.train)
         for name, value in loss_summary.items():
@@ -130,16 +146,12 @@ class Experiment:
             self.train_epoch(epoch, summary_writer)
             self.eval_epoch(epoch, summary_writer)
 
-            state = {
-                'epoch': epoch, 'model': self.model.state_dict(),
-                'optimizer': self.optimizer.state_dict()}
             if keep_every_ckpt:
                 filename = self.checkpoint_dir / f'checkpoint_{epoch:04d}.pt'
             else:
                 filename = self.checkpoint_dir / 'checkpoint.pt'
+            self.save(filename, epoch)
 
-            logger.info(f'Saving checkpoint to {filename}')
-            torch.save(state, filename)
 
 
 class ImageClassifierExperiment(Experiment):
@@ -177,7 +189,6 @@ class ImageClassifierExperiment(Experiment):
         known_lossses = np.concatenate([train_losses, test_losses[is_known]])
         unknown_losses = test_losses[~is_known]
         return self.TestLosses(known_lossses, unknown_losses, test_losses, is_known)
-
 
     def eval_epoch(self, epoch, summary_writer):
         super().eval_epoch(epoch, summary_writer)
@@ -332,31 +343,38 @@ class WrappedNVVL:
         self.name = name
 
     def __iter__(self):
-        return (elem[self.name].permute(0, 2, 1, 3, 4) for elem in self.loader)
+        return (elem[self.name] for elem in self.loader)
 
 
 class ShanghaiTechExperiment(Experiment):
 
     timesteps = 16
     frame_shape = (256, 480)
-    batch_size = 8
+    batch_size = 32
+    re_weight = 0.00001
 
     def __init__(self, traindir, *args, **kwargs):
         height, width = self.frame_shape
-        video_files = list(map(str, Path(traindir).glob('*.mp4')))
+        video_files = list(sorted(map(str, Path(traindir).glob('*.mp4'))))
+
+        video_files = ['/home/daniel/data/shanghaitech/training/01.mp4']
         logger.info(f'Found {len(video_files)} video files in training set.')
         processing = {
-            'input': nvvl.ProcessDesc(scale_width=width, scale_height=height)}
+            'input': nvvl.ProcessDesc(
+                scale_width=width, scale_height=height, normalized=True,
+                dimension_order='cfhw')}
         trainset = nvvl.VideoDataset(video_files, self.timesteps,
                                      processing=processing, device_id=0)
         self.datasets = Split(trainset, None)
+        self.global_step = 0
 
         super().__init__(*args, **kwargs)
 
     def get_loaders(self):
         return Split(
             WrappedNVVL(nvvl.VideoLoader(
-                self.datasets.train, batch_size=self.batch_size, shuffle=True)),
+                self.datasets.train, batch_size=self.batch_size, shuffle=True,
+                buffer_length=3)),
             None)
 
     @classmethod
@@ -378,6 +396,37 @@ class ShanghaiTechExperiment(Experiment):
         model = od.AutoregressiveVideoLoss(encoder, regressor)
         model = nn.DataParallel(model)
         return model
+
+    def train_epoch(self, epoch, summary_writer):
+        self.model.train()
+
+        for x in tqdm(self.loaders.train):
+            loss, losses = self.train_step(x)
+            summary_writer.add_scalar(
+                'loss/total', loss, self.global_step)
+            summary_writer.add_scalar(
+                'loss/reconstruction', losses['reconstruction'], self.global_step)
+            summary_writer.add_scalar(
+                'loss/autoregressive', losses['autoregressive'], self.global_step)
+            self.global_step += 1
+
+    def save(self, ckpt_path, epoch):
+        state = {
+            'epoch': epoch, 'model': self.model.state_dict(),
+            'optimizer': self.optimizer.state_dict(),
+            'global_step': self.global_step}
+        logger.info(f'Saving checkpoint to {ckpt_path}')
+        torch.save(state, ckpt_path)
+
+    def restore(self, ckpt_path):
+        logger.info(f'Restoring model from {ckpt_path}')
+        checkpoint = torch.load(ckpt_path)
+        self.model.load_state_dict(checkpoint['model'])
+        self.optimizer.load_state_dict(checkpoint['optimizer'])
+        epoch = checkpoint['epoch']
+        self.global_step = checkpoint['global_step']
+        logger.info(f'Successfully restored at epoch={epoch}')
+        return epoch
 
 
 @experiments.command('shanghai-tech')
