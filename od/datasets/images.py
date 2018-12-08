@@ -5,9 +5,7 @@ import pickle
 from collections import namedtuple
 from operator import add
 from pathlib import Path
-from time import sleep
 
-import mnist
 import numpy as np
 import torch
 import torchvision as tv
@@ -21,9 +19,14 @@ __all__ = ['MNIST', 'CIFAR10']
 
 
 class NoveltyDetectionDataset(abc.ABC):
-    def __init__(self, root, training_classes, train=True, transform=None, download=False):
+
+    MODE = None
+
+    def __init__(self, root, training_classes, train=True, transform=None,
+                 download=False, yield_target=True):
         self.root = root
         self.transform = transform
+        self.yield_target = yield_target
 
         if download:
             self.download()
@@ -59,8 +62,8 @@ class NoveltyDetectionDataset(abc.ABC):
             transforms + [tv.transforms.ToTensor()])
         test_transform = tv.transforms.Compose([tv.transforms.ToTensor()])
         datasets = Split(
-            cls(*args, train=True, transform=train_transform, **kwargs),
-            cls(*args, train=False, transform=test_transform, **kwargs))
+            cls(*args, train=True, transform=train_transform, yield_target=False, **kwargs),
+            cls(*args, train=False, transform=test_transform, yield_target=True, **kwargs))
         return datasets
 
     def __getitem__(self, index):
@@ -70,7 +73,7 @@ class NoveltyDetectionDataset(abc.ABC):
         if self.transform is not None:
             img = self.transform(img)
 
-        return img, target
+        return (img, target) if self.yield_target else img
 
 
 class MNIST(NoveltyDetectionDataset, tv.datasets.MNIST):
