@@ -85,13 +85,14 @@ class DecoderBlock(nn.Module):
 
         self.residual_path = nn.Sequential(
             nn.ConvTranspose3d(in_channels, out_channels, kernel_size=1,
-                               stride=(temporal_stride, 2, 2), output_padding=1),
+                               stride=(temporal_stride, 2, 2),
+                               output_padding=(temporal_stride - 1, 1, 1)),
             nn.BatchNorm3d(out_channels))
 
         self.conv_path = nn.Sequential(
             nn.ConvTranspose3d(in_channels, out_channels, kernel_size=3,
                                stride=(temporal_stride, 2, 2), padding=1,
-                               output_padding=1),
+                               output_padding=(temporal_stride - 1, 1, 1)),
             nn.LeakyReLU(),
             nn.BatchNorm3d(out_channels),
             nn.Conv3d(out_channels, out_channels, kernel_size=3, stride=1,
@@ -203,7 +204,7 @@ class ResidualVideoAE(nn.Module):
 
     def forward(self, x):
         """
-        >>> model = ResidualVideoAE((16, 64, 64), [10], [5], color_channels=4, temporal_strides=[2])
+        >>> model = ResidualVideoAE((16, 64, 64), [10], [5], color_channels=4, temporal_strides=[1])
         >>> x = torch.randn(2, 4, 16, 64, 64)
         >>> y = model(x)
         >>> tuple(y.shape)
