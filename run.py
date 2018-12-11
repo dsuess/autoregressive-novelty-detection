@@ -1,4 +1,4 @@
-from od.experiments import experiments
+from od.experiments.cli import experiments
 import resource
 
 
