@@ -7,11 +7,15 @@ import numpy as np
 import nvvl
 import od
 import torch
-from od.datasets import Split
-from od.utils import logger
+import torchvision as tv
+from od.datasets import NoveltyVideoDataset, Split
+from od.utils import connected_compoents, logger, render_mpl_figure
+from sklearn import metrics
 from torch import nn
+from torch.utils.data import DataLoader
 from torchvision.utils import make_grid
 from tqdm import tqdm
+
 from .base import Experiment
 
 
@@ -26,13 +30,27 @@ class WrappedNVVL:
         return (elem[self.name] for elem in self.loader)
 
 
+def sample_from_nvvl(dataset, samples=10):
+    indices = np.random.choice(len(dataset), size=samples, replace=False)
+    return torch.cat([dataset[i]['input'].detach().to('cpu')[None] for i in indices])
+
+
+def performance_plot(y_gt, y_pred):
+    fig = pl.figure(0, figsize=(8, 4))
+    x = np.arange(len(y_pred))
+    pl.plot(x, y_pred)
+    for start, end in connected_compoents(y_gt < 0.5):
+        pl.axvspan(x[start], x[end], color='r', alpha=0.4)
+    return fig
+
+
 class ShanghaiTechExperiment(Experiment):
 
     time_steps = 16
     time_stride = 1
     frame_shape = (160, 256)
     batch_size = 16
-    re_weight = 0.0001
+    re_weight = 1.0
 
     def __init__(self, traindir, *args, **kwargs):
         height, width = self.frame_shape
@@ -47,15 +65,28 @@ class ShanghaiTechExperiment(Experiment):
             'input': nvvl.ProcessDesc(
                 #  scale_width=width, scale_height=height,
                 normalized=True, dimension_order='cfhw', index_map=index_map)}
-        trainset = nvvl.VideoDataset(
-            video_files, self.time_stride * self.time_steps, device_id=0,
-            processing=processing)
 
-        indices = np.random.choice(len(trainset), size=10, replace=False)
-        self.sample_images = torch.cat(
-            [trainset[i]['input'].detach().to('cpu')[None] for i in indices])
-        self.datasets = Split(trainset, None)
+        testing_tags = [
+            s.stem
+            for s in Path('/home/daniel/data/shanghaitech/testing/frames').glob('*')
+            if s.stem.startswith('01')][:4]
+        logger.info(f'Found {len(testing_tags)} testing examples')
+
+        transform = tv.transforms.Compose([
+            tv.transforms.Resize(self.frame_shape),
+            tv.transforms.ToTensor()])
+
+        self.datasets = Split(
+            nvvl.VideoDataset(
+                video_files, self.time_stride * self.time_steps, device_id=0,
+                processing=processing),
+            [NoveltyVideoDataset(
+                f'/home/daniel/data/shanghaitech/testing/frames/{s}/',
+                f'/home/daniel/data/shanghaitech/testing/test_frame_mask/{s}.npy',
+                window=16, step=1, transform=transform)
+            for s in testing_tags])
         self.global_step = 0
+        self.sample_images = sample_from_nvvl(self.datasets.train)
 
         super().__init__(*args, **kwargs)
 
@@ -64,7 +95,7 @@ class ShanghaiTechExperiment(Experiment):
             WrappedNVVL(nvvl.VideoLoader(
                 self.datasets.train, batch_size=self.batch_size, shuffle=True,
                 buffer_length=3)),
-            None)
+            [DataLoader(ds, batch_size=16) for ds in self.datasets.test])
 
     @classmethod
     def get_model(cls, parallel=True):
@@ -119,6 +150,24 @@ class ShanghaiTechExperiment(Experiment):
             recons = make_grid(recons.transpose(0, 1), nrow=original.size(1))
             yield make_grid([original, recons], nrow=1)
 
+    def eval_test_dataset(self, loader):
+        groundtruth = torch.zeros(loader.dataset.nr_frames)
+        prediction = torch.zeros(loader.dataset.nr_frames)
+        counts = torch.zeros(loader.dataset.nr_frames)
+
+        for images, y_gt, indices in loader:
+            y_pred = self.model.module.predict(images.to(self.device)).to('cpu')
+
+            for idx, g, p in zip(indices, y_gt, y_pred):
+                groundtruth[idx] += g
+                prediction[idx] += p
+                counts[idx] += 1
+
+        groundtruth = (groundtruth / counts).numpy()
+        prediction = (prediction / counts).numpy()
+        sel = counts.numpy() > 0
+        return groundtruth[sel], prediction[sel]
+
     def eval_epoch(self, epoch, summary_writer):
         super().eval_epoch(epoch, summary_writer)
 
@@ -126,6 +175,19 @@ class ShanghaiTechExperiment(Experiment):
             sample_images = self.make_example_images(self.sample_images)
             for i, sample in enumerate(sample_images):
                 summary_writer.add_image(f'train_images_{i}', sample, epoch)
+
+            roc_scores = []
+            for i, loader in enumerate(self.loaders.test):
+                y_gt, y_pred = self.eval_test_dataset(loader)
+                # since NLP larger for novel frames, we have to use 1 - y_gt
+                roc_scores.append(metrics.roc_auc_score(1 - y_gt, y_pred))
+                fig = performance_plot(y_gt, y_pred)
+                fig = render_mpl_figure(fig)
+                summary_writer.add_image(f'test_performance_{i}', fig, epoch)
+
+            roc_score = np.mean(roc_scores)
+            summary_writer.add_scalar(f'metrics/avg_roc_auc', roc_score, epoch)
+
 
     def save(self, ckpt_path, epoch):
         state = {

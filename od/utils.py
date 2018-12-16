@@ -1,3 +1,4 @@
+import itertools as it
 import logging
 import os
 
@@ -65,6 +66,45 @@ def mse_loss(x, y, reduction='elementwise_mean'):
         return d.sum()
     else:
         raise ValueError(f'reduction={reduction} invalid')
+
+
+def interleave(*args):
+    """
+    >>> list(interleave([1, 2, 3], [4, 5, 6]))
+    [1, 4, 2, 5, 3, 6]
+    """
+    return it.chain(*zip(*args))
+
+
+def connected_compoents(arr):
+    end = -1
+    while end < len(arr) - 1:
+        idx, = np.nonzero(arr[end + 1:])
+        try:
+            start = idx[0] + end + 1
+        except IndexError:
+            return
+
+        idx, = np.nonzero(~arr[start + 1:])
+        try:
+            end = idx[0] + start + 1
+        except IndexError:
+            end = len(arr) - 1
+        yield start, end
+
+
+def iterbatch(iterable, batch_size=None):
+    if batch_size is None:
+        yield [iterable]
+    else:
+        iterator = iter(iterable)
+        try:
+            while True:
+                first_elem = next(iterator)
+                yield it.chain((first_elem,),
+                               it.islice(iterator, batch_size - 1))
+        except StopIteration:
+            pass
 
 
 logger = get_default_logger('AND')
