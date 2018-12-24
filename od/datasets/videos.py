@@ -2,39 +2,40 @@ import functools as ft
 from pathlib import Path
 
 import numpy as np
+import nvvl
 import torch
 from PIL import Image
-from torch.utils.data.dataset import Dataset
+from torch.utils.data import DataLoader, Dataset
+
+from ..utils import logger
 
 
-class NoveltyVideoDataset(Dataset):
+class FrameMaskDataset:
 
-    def __init__(self, frames_dir, frame_mask_path, *, window, step=1,
-                 file_format='{:03d}.jpg'):
-        self.frames_dir = Path(frames_dir)
-        self.target = 1 - np.load(frame_mask_path)
-        self.window = window
-        self.step = step
-        self.file_format = file_format
+    def __init__(self, datadir, index_map, video_paths=None):
+        self.datadir = Path(datadir)
 
-    def verify_path(self):
-        for i in range(len(self.frame_mask)):
-            path = self.frames_dir / self.file_format.format(i)
-            if not path.exists():
-                raise ValueError(f'Path to {path} not found')
-        return self
+        index_map = np.array(index_map, dtype=np.int64)
+        index_map = np.argsort(index_map)[sum(index_map < 0):]
+        # make sure index_map is contiguous with each index only once
+        assert len(index_map) == max(index_map) + 1
+        self.index_map = torch.from_numpy(index_map)
 
-    def __len__(self):
-        return (len(self.target) - self.window) // self.step + 1
+        if video_paths is None:
+            files = self.datadir.glob('*.npy')
+        else:
+            files = [self.datadir / f'{Path(s).stem}.npy' for s in video_paths]
 
-    # TODO Make this dependent on window size
-    @ft.lru_cache(maxsize=16)
-    def _load_img(self, idx):
-        path = self.frames_dir / self.file_format.format(idx)
-        return np.array(Image.open(path))
+        # 1 - x since y_gt = 1.0 should equal known frame
+        self.frame_masks = {s.stem: torch.Tensor(1 - np.load(s)) for s in files}
+        logger.info(f'Found {len(self.frame_masks)} frame masks in {self.datadir}')
 
-    def __getitem__(self, i):
-        indices = np.arange(self.window) + self.step * i
-        images = np.array([self._load_img(i) for i in indices])
-        target = self.target[indices]
-        return images, target
+    def get_label(self, filename, frame_id, _):
+        stem = Path(filename).stem
+        indices = frame_id + self.index_map
+        mask = self.frame_masks[stem][indices]
+        return mask, indices, stem
+
+    @property
+    def nr_frames(self):
+        return {key: len(val) for key, val in self.frame_masks.items()}

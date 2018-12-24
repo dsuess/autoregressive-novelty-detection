@@ -1,3 +1,4 @@
+from collections import namedtuple
 from pathlib import Path
 from time import time
 
@@ -8,9 +9,10 @@ import nvvl
 import od
 import torch
 import torchvision as tv
-from od.datasets import NoveltyVideoDataset, Split
+from od.datasets.videos import FrameMaskDataset
 from od.utils import connected_compoents, logger, render_mpl_figure
 from sklearn import metrics
+from tensorboardX import SummaryWriter
 from torch import nn
 from torch.utils.data import DataLoader
 from torchvision.utils import make_grid
@@ -28,6 +30,19 @@ class WrappedNVVL:
 
     def __iter__(self):
         return (elem[self.name] for elem in self.loader)
+
+
+class WrappedLabelledNVVL(WrappedNVVL):
+
+    Result = namedtuple('Result', 'frames, y_gt, indices, video_name')
+
+    def __iter__(self):
+        for elem in self.loader:
+            frames = elem[self.name]
+            y_gt = torch.cat([x[None] for x, _, _ in elem['labels']])
+            indices = torch.cat([x[None] for _, x, _ in elem['labels']])
+            video_name = [x for _, _, x in elem['labels']]
+            yield self.Result(frames, y_gt, indices, video_name)
 
 
 def sample_from_nvvl(dataset, samples=10):
@@ -49,53 +64,55 @@ class ShanghaiTechExperiment(Experiment):
     time_steps = 16
     time_stride = 1
     frame_shape = (160, 256)
-    batch_size = 16
-    re_weight = 1.0
+    batch_size = 64
+    re_weight = .001
 
     def __init__(self, traindir, *args, **kwargs):
         height, width = self.frame_shape
-        video_files = list(sorted(map(str, Path(traindir).glob('*.mp4'))))
 
-        video_files = ['/home/daniel/data/shanghaitech/training/01.mp4']
-        logger.info(f'Found {len(video_files)} video files in training set.')
-        index_map = list(od.utils.interleave(
-            range(self.time_steps),
-            *[[-1] * self.time_steps] * (self.time_stride - 1)))
+        #  training_videos = list(sorted(map(str, Path(traindir).glob('*.mp4'))))
+        training_videos = ['/home/daniel/data/shanghaitech/training/01.mp4']
+        logger.info(f'Found {len(training_videos)} video files in training set.')
+
+        testing_videos = [
+            str(s) for s in Path('/home/daniel/data/shanghaitech/testing/videos/').glob('01_*.mp4')][:5]
+        logger.info(f'Found {len(testing_videos)} video files in test set.')
+
+        #  index_map = list(od.utils.interleave(
+        #      range(self.time_steps),
+        #      *[[-1] * self.time_steps] * (self.time_stride - 1)))
+        index_map = np.arange(16)
         processing = {
             'input': nvvl.ProcessDesc(
                 #  scale_width=width, scale_height=height,
-                normalized=True, dimension_order='cfhw', index_map=index_map)}
+                normalized=True, dimension_order='cfhw',
+                index_map=list(index_map))}
 
-        testing_tags = [
-            s.stem
-            for s in Path('/home/daniel/data/shanghaitech/testing/frames').glob('*')
-            if s.stem.startswith('01')][:4]
-        logger.info(f'Found {len(testing_tags)} testing examples')
-
-        transform = tv.transforms.Compose([
-            tv.transforms.Resize(self.frame_shape),
-            tv.transforms.ToTensor()])
-
-        self.datasets = Split(
+        self.frame_mask_dataset = FrameMaskDataset(
+            '/home/daniel/data/shanghaitech/testing/test_frame_mask',
+            index_map=index_map, video_paths=testing_videos)
+        # TODO Adjust for time_stride
+        self.datasets = od.datasets.Split(
             nvvl.VideoDataset(
-                video_files, self.time_stride * self.time_steps, device_id=0,
+                training_videos, self.time_steps, device_id=0,
                 processing=processing),
-            [NoveltyVideoDataset(
-                f'/home/daniel/data/shanghaitech/testing/frames/{s}/',
-                f'/home/daniel/data/shanghaitech/testing/test_frame_mask/{s}.npy',
-                window=16, step=1, transform=transform)
-            for s in testing_tags])
+            nvvl.VideoDataset(
+                testing_videos, self.time_steps, device_id=1,
+                processing=processing, get_label=self.frame_mask_dataset.get_label))
+
         self.global_step = 0
         self.sample_images = sample_from_nvvl(self.datasets.train)
 
         super().__init__(*args, **kwargs)
 
     def get_loaders(self):
-        return Split(
+        return od.datasets.Split(
             WrappedNVVL(nvvl.VideoLoader(
                 self.datasets.train, batch_size=self.batch_size, shuffle=True,
                 buffer_length=3)),
-            [DataLoader(ds, batch_size=16) for ds in self.datasets.test])
+            WrappedLabelledNVVL(nvvl.VideoLoader(
+                self.datasets.test, batch_size=self.batch_size, shuffle=False,
+                buffer_length=10)))
 
     @classmethod
     def get_model(cls, parallel=True):
@@ -135,7 +152,7 @@ class ShanghaiTechExperiment(Experiment):
             summary_writer.add_scalar(
                 'loss/autoregressive', losses['autoregressive'], self.global_step)
 
-            if self.global_step % 100 == 0:
+            if self.global_step % 2000 == 0:
                 self.eval_epoch(self.global_step, summary_writer)
                 self.model.train()
 
@@ -151,22 +168,28 @@ class ShanghaiTechExperiment(Experiment):
             yield make_grid([original, recons], nrow=1)
 
     def eval_test_dataset(self, loader):
-        groundtruth = torch.zeros(loader.dataset.nr_frames)
-        prediction = torch.zeros(loader.dataset.nr_frames)
-        counts = torch.zeros(loader.dataset.nr_frames)
+        frames_dict = self.frame_mask_dataset.nr_frames
+        groundtruth = {stem: torch.zeros(nr_frames)
+                       for stem, nr_frames in frames_dict.items()}
+        prediction = {stem: torch.zeros(nr_frames)
+                      for stem, nr_frames in frames_dict.items()}
+        counts = {stem: torch.zeros(nr_frames)
+                  for stem, nr_frames in frames_dict.items()}
 
-        for images, y_gt, indices in loader:
-            y_pred = self.model.module.predict(images.to(self.device)).to('cpu')
+        for result in loader:
+            y_pred = self.model.module.predict(result.frames.to(self.device)).to('cpu')
 
-            for idx, g, p in zip(indices, y_gt, y_pred):
-                groundtruth[idx] += g
-                prediction[idx] += p
-                counts[idx] += 1
+            for name, idx, g, p in zip(result.video_name, result.indices, result.y_gt, y_pred):
+                stem = Path(name).stem
+                groundtruth[stem][idx] += g
+                prediction[stem][idx] += p
+                counts[stem][idx] += 1
 
-        groundtruth = (groundtruth / counts).numpy()
-        prediction = (prediction / counts).numpy()
-        sel = counts.numpy() > 0
-        return groundtruth[sel], prediction[sel]
+        for stem in groundtruth:
+            sel = counts[stem].numpy() > 0
+            groundtruth[stem] = (groundtruth[stem] / counts[stem]).numpy()[sel]
+            prediction[stem] = (prediction[stem] / counts[stem]).numpy()[sel]
+        return groundtruth, prediction
 
     def eval_epoch(self, epoch, summary_writer):
         super().eval_epoch(epoch, summary_writer)
@@ -177,13 +200,14 @@ class ShanghaiTechExperiment(Experiment):
                 summary_writer.add_image(f'train_images_{i}', sample, epoch)
 
             roc_scores = []
-            for i, loader in enumerate(self.loaders.test):
-                y_gt, y_pred = self.eval_test_dataset(loader)
-                # since NLP larger for novel frames, we have to use 1 - y_gt
-                roc_scores.append(metrics.roc_auc_score(1 - y_gt, y_pred))
+            y_gts, y_preds = self.eval_test_dataset(self.loaders.test)
+
+            for key in y_gts:
+                y_gt, y_pred = y_gts[key], y_preds[key]
+                roc_scores.append(metrics.roc_auc_score(y_gt, y_pred))
                 fig = performance_plot(y_gt, y_pred)
                 fig = render_mpl_figure(fig)
-                summary_writer.add_image(f'test_performance_{i}', fig, epoch)
+                summary_writer.add_image(f'test_performance_{key}', fig, epoch)
 
             roc_score = np.mean(roc_scores)
             summary_writer.add_scalar(f'metrics/avg_roc_auc', roc_score, epoch)
@@ -206,3 +230,19 @@ class ShanghaiTechExperiment(Experiment):
         self.global_step = checkpoint['global_step']
         logger.info(f'Successfully restored at epoch={epoch}')
         return epoch
+
+    def run(self, keep_every_ckpt=True):
+        summary_writer = SummaryWriter(self.logdir)
+        restored_epoch = self.restore_latest(self.checkpoint_dir)
+        epochs = tqdm(range(restored_epoch + 1, self.epochs + 1),
+                      total=self.epochs, initial=restored_epoch)
+        epochs.refresh()
+        for epoch in epochs:
+            epochs.update(epoch)
+            self.train_epoch(epoch, summary_writer)
+
+            if keep_every_ckpt:
+                filename = self.checkpoint_dir / f'checkpoint_{epoch:04d}.pt'
+            else:
+                filename = self.checkpoint_dir / 'checkpoint.pt'
+            self.save(filename, epoch)
