@@ -93,4 +93,4 @@ def cifar10(logdir, download_dir, epochs, batch):
 def shanghai_tech(logdir, epochs):
     ShanghaiTechExperiment(
         traindir='/home/daniel/data/shanghaitech/training/h264',
-        logdir=logdir, epochs=epochs).run()
+        logdir=logdir, epochs=epochs)
