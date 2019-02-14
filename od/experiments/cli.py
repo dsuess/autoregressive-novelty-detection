@@ -37,7 +37,7 @@ def mnist(logdir, download_dir, epochs, batch):
             datasets = od.datasets.MNIST.load_split(
                 download_dir, {i}, download=True, transforms=transforms)
             experiment = MNISTExperiment(
-                datasets=datasets, logdir=logdir / f'only_{i}', epochs=epochs)
+                datasets=datasets, logdir=str(logdir / f'only_{i}'), epochs=epochs)
             experiment.run(keep_every_ckpt=False)
 
             losses = experiment.compute_eval_losses()

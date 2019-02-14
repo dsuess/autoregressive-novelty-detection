@@ -14,8 +14,6 @@ class Experiment:
 
     TestLosses = namedtuple('TestLosses', 'known, unknown, test, test_known')
 
-    re_weight = 1.0
-    ar_weight = 1.0
     learning_rate = 1e-3
 
     def __init__(self, epochs, logdir):
@@ -71,15 +69,13 @@ class Experiment:
 
     def train_step(self, x):
         x = x.to(self.device)
-        losses = self.model(x)
-        losses = {key: val.mean() for key, val in losses.items()}
-        total_loss = self.re_weight * losses['reconstruction'] \
-            + self.ar_weight * losses['autoregressive']
+        loss, losses = self.model(x, retlosses=True)
+        losses = {key: val for key, val in losses.items()}
 
         self.optimizer.zero_grad()
-        total_loss.backward()
+        loss.backward()
         self.optimizer.step()
-        return total_loss, losses
+        return loss, losses
 
     def train_epoch(self, epoch, summary_writer):
         self.model.train()

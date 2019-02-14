@@ -70,15 +70,18 @@ class AutoregressiveLayer(nn.Module):
 
 class AutoregressiveLoss(nn.Module):
 
-    def __init__(self, encoder, regressor, **kwargs):
+    def __init__(self, encoder, regressor, re_weight=1., reduction='mean', **kwargs):
         super().__init__(**kwargs)
+        assert reduction in {'mean', 'sum', 'none'}
         self.encoder = encoder
         self.regressor = regressor
+        self.re_weight = re_weight
+        self.reduction = reduction
 
         self.register_scalar('bins', self.regressor.bins, torch.int64)
 
-    def register_scalar(self, name, val, type):
-        val = torch.Tensor([val]).reshape(tuple()).to(type)
+    def register_scalar(self, name, val, dtype):
+        val = torch.Tensor([val]).reshape(tuple()).to(dtype)
         self.register_buffer(name, val)
 
     def _autoreg_loss(self, latent):
@@ -89,7 +92,7 @@ class AutoregressiveLoss(nn.Module):
             latent_binned_pred, latent_binned, reduction='none')
         return autoreg_loss.mean(dim=1)
 
-    def forward(self, x):
+    def forward(self, x, retlosses=False):
         latent = self.encoder.encode(x)
         autoreg_loss = self._autoreg_loss(latent)
 
@@ -98,7 +101,19 @@ class AutoregressiveLoss(nn.Module):
         reconstruction_loss = reconstruction_loss.view(reconstruction_loss.size(0), -1)
         reconstruction_loss = reconstruction_loss.sum(dim=1)
 
-        return {'reconstruction': reconstruction_loss, 'autoregressive': autoreg_loss}
+        if self.reduction == 'mean':
+            autoreg_loss = autoreg_loss.mean()
+            reconstruction_loss = autoreg_loss.mean()
+        elif self.reduction == 'sum':
+            autoreg_loss = autoreg_loss.sum()
+            reconstruction_loss = autoreg_loss.sum()
+
+        loss = self.re_weight * autoreg_loss + reconstruction_loss
+
+        if retlosses:
+            return loss, {'reconstruction': reconstruction_loss,
+                          'autoregressive': autoreg_loss}
+        return loss
 
     def predict(self, x):
         with torch.no_grad():
