@@ -103,12 +103,12 @@ class AutoregressiveLoss(nn.Module):
 
         if self.reduction == 'mean':
             autoreg_loss = autoreg_loss.mean()
-            reconstruction_loss = autoreg_loss.mean()
+            reconstruction_loss = reconstruction_loss.mean()
         elif self.reduction == 'sum':
             autoreg_loss = autoreg_loss.sum()
-            reconstruction_loss = autoreg_loss.sum()
+            reconstruction_loss = reconstruction_loss.sum()
 
-        loss = self.re_weight * autoreg_loss + reconstruction_loss
+        loss = autoreg_loss + self.re_weight * reconstruction_loss
 
         if retlosses:
             return loss, {'reconstruction': reconstruction_loss,
