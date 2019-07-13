@@ -5,8 +5,8 @@ from pathlib import Path
 
 import matplotlib.pyplot as pl
 import torch
-from od.utils import logger
-from tensorboardX import SummaryWriter
+from novelly.utils import logger
+from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 

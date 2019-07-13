@@ -2,7 +2,7 @@ import numpy as np
 import torch
 from torch import nn
 
-from od.utils import logger, mse_loss
+from novelly.utils import logger, mse_loss
 from .linear import AutoregressiveLoss
 
 

@@ -1,3 +1,3 @@
 from .images import *
-from .videos import *
 from .utils import *
+from .videos import *

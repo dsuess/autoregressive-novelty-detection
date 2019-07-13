@@ -2,7 +2,6 @@ import functools as ft
 from pathlib import Path
 
 import numpy as np
-import nvvl
 import torch
 from PIL import Image
 from torch.utils.data import DataLoader, Dataset
@@ -33,7 +32,8 @@ class FrameMaskDataset:
     def get_label(self, filename, frame_id, _):
         stem = Path(filename).stem
         indices = frame_id + self.index_map
-        mask = self.frame_masks[stem][indices]
+        # "1-" since class 1 = novel
+        mask = 1 - self.frame_masks[stem][indices]
         return mask, indices, stem
 
     @property

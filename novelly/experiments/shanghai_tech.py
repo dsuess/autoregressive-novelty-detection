@@ -4,23 +4,29 @@ from time import time
 
 import click
 import ignite
-import matplotlib.pyplot as pl
 import numpy as np
-import nvvl
-import od
 import torch
 import torchvision as tv
 from ignite._utils import convert_tensor
-from od.datasets.videos import FrameMaskDataset
-from od.utils import connected_compoents, logger, render_mpl_figure
 from sklearn import metrics
-from tensorboardX import SummaryWriter
 from torch import nn
 from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
 from torchvision.utils import make_grid
 from tqdm import tqdm
 
+import matplotlib.pyplot as pl
+import novelly
+from novelly.datasets.videos import FrameMaskDataset
+from novelly.utils import connected_compoents, logger, render_mpl_figure
+
 from .base import Experiment
+
+try:
+    import nvvl
+except ModuleNotFoundError:
+    import warnings
+    warnings.warn('Could not import NVVL')
 
 
 def sample_from_nvvl(dataset, samples=10):
@@ -32,7 +38,7 @@ def performance_plot(y_gt, y_pred):
     fig = pl.figure(0, figsize=(8, 4))
     x = np.arange(len(y_pred))
     pl.plot(x, y_pred)
-    for start, end in connected_compoents(y_gt < 0.5):
+    for start, end in connected_compoents(y_gt > 0.5):
         pl.axvspan(x[start], x[end], color='r', alpha=0.4)
     return fig
 
@@ -59,9 +65,9 @@ def create_unsupervised_trainer(model, optimizer, device=None, non_blocking=Fals
 
 
 def get_loaders(traindir, batch_size, time_steps):
-    training_videos = ['/home/users/daniel/data/outlier_detection/train.mp4']
+    training_videos = ['/home/users/daniel/data/shanghaitech/training/nvvl_videos/01_001.mp4']
     logger.info(f'Found {len(training_videos)} video files in training set.')
-    testing_videos = ['/home/users/daniel/data/outlier_detection/test.mp4']
+    testing_videos = ['/home/users/daniel/data/shanghaitech/testing/videos/01_0014.mp4']
     logger.info(f'Found {len(testing_videos)} video files in test set.')
 
     index_map = np.arange(16)
@@ -71,16 +77,16 @@ def get_loaders(traindir, batch_size, time_steps):
             normalized=True, dimension_order='cfhw',
             index_map=list(index_map))}
     frame_mask_dataset = FrameMaskDataset(
-        '/home/users/daniel/data/outlier_detection',
+        '/home/users/daniel/data/shanghaitech/testing/test_frame_mask',
         index_map=index_map, video_paths=testing_videos)
 
-    datasets = od.datasets.Split(
+    datasets = novelly.datasets.Split(
         nvvl.VideoDataset(
             training_videos, time_steps, processing=processing),
         nvvl.VideoDataset(
             testing_videos, time_steps,
             processing=processing, get_label=frame_mask_dataset.get_label))
-    loaders = od.datasets.Split(
+    loaders = novelly.datasets.Split(
         nvvl.VideoLoader(datasets.train, batch_size=batch_size, shuffle=True, buffer_length=3),
         nvvl.VideoLoader(datasets.test, batch_size=batch_size, buffer_length=3))
     return loaders, frame_mask_dataset
@@ -113,16 +119,19 @@ def eval_test_dataset(predict_fn, loader, frame_mask_dataset, device):
 
 def ShanghaiTechExperiment(traindir, logdir, epochs):
     time_steps = 16
-    height, width = (160, 160)
+    height, width = (160, 256)
     batch_size = 4
     device = 'cuda:0'
     logdir = Path(logdir)
-    log_interval = 1
+    log_interval = 10
 
+    print('Setting up datasources')
     loaders, frame_mask_dataset = get_loaders(traindir, batch_size, time_steps)
+    print('Setting up samples')
     sample_images = sample_from_nvvl(loaders.train.dataset, samples=3)
 
-    encoder = od.ResidualVideoAE(
+    print('Setting up models')
+    encoder = novelly.ResidualVideoAE(
         input_shape=(time_steps, height, width),
         encoder_sizes=[8, 16, 32, 64, 64],
         decoder_sizes=[64, 32, 16, 8, 8],
@@ -131,18 +140,19 @@ def ShanghaiTechExperiment(traindir, logdir, epochs):
         color_channels=3,
         latent_activation=nn.Sigmoid())
 
-    regressor = od.AutoregresionModule(
+    regressor = novelly.AutoregresionModule(
         dim=64,
         layer_sizes=[32, 32, 32, 32, 100],
-        layer=od.AutoregressiveConvLayer)
+        layer=novelly.AutoregressiveConvLayer)
 
-    model = od.AutoregressiveVideoLoss(encoder, regressor, re_weight=0.001)
-    optimizer = torch.optim.Adam(model.parameters())
+    #  model = novelly.AutoregressiveVideoLoss(encoder, regressor, re_weight=1e-3, scale=1000)
+    model = novelly.AutoregressiveVideoLoss(encoder, regressor, re_weight=1)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
 
-    summary_writer = od.datasets.Split(
+    summary_writer = novelly.datasets.Split(
         SummaryWriter(log_dir=str(logdir / 'train')),
         SummaryWriter(log_dir=str(logdir / 'val')))
-
+    print('Lets go')
     trainer = create_unsupervised_trainer(model, optimizer, device=device, non_blocking=True)
 
     @trainer.on(ignite.engine.Events.ITERATION_COMPLETED)
@@ -165,6 +175,8 @@ def ShanghaiTechExperiment(traindir, logdir, epochs):
     @torch.no_grad()
     @trainer.on(ignite.engine.Events.EPOCH_COMPLETED)
     def evaluate_model(engine):
+        print('Running evaluation')
+        #  if engine.state.epoch % 10 != 0: return
         model.eval()
 
         for i, original in enumerate(sample_images):

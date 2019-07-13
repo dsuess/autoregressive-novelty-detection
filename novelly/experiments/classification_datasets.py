@@ -4,18 +4,20 @@ from multiprocessing import cpu_count
 from pathlib import Path
 
 import click
-import matplotlib.pyplot as pl
 import numpy as np
-import od
 import torch
 import torchvision as tv
-from od.datasets import Split
 from sklearn import metrics
 from torch import nn
 from torch.utils.data import DataLoader
 from torchvision.utils import make_grid
-from .base import Experiment
 
+import matplotlib.pyplot as pl
+import novelly
+from novelly import utils
+from novelly.datasets import Split
+
+from .base import Experiment
 
 __all__ = ['MNISTExperiment', 'CIFAR10Experiment']
 
@@ -87,10 +89,10 @@ class ImageClassifierExperiment(Experiment):
             pl.title('Loss Histogram')
             pl.xlabel('Autoreg. Loss')
             pl.legend()
-            rendered_fig = od.utils.render_mpl_figure()
+            rendered_fig = utils.render_mpl_figure()
             summary_writer.add_image('loss_histogram', rendered_fig, epoch)
 
-            overlap = od.utils.sample_distribution_overlap(
+            overlap = utils.sample_distribution_overlap(
                 losses.known, losses.unknown)
             summary_writer.add_scalar('metrics/histogram_overlap', overlap, epoch)
             summary_writer.add_scalar('metrics/train_loss', np.mean(losses.known), epoch)
@@ -108,18 +110,18 @@ class MNISTExperiment(ImageClassifierExperiment):
 
     @staticmethod
     def get_model():
-        encoder = od.ResidualAE(
+        encoder = novelly.ResidualAE(
             input_shape=(28, 28),
             encoder_sizes=[32, 64],
             fc_sizes=[64],
             color_channels=1,
             latent_activation=nn.Sigmoid())
 
-        regressor = od.AutoregresionModule(
+        regressor = novelly.AutoregresionModule(
             dim=64,
             layer_sizes=[32, 32, 32, 32, 100])
 
-        return od.AutoregressiveLoss(encoder, regressor)
+        return novelly.AutoregressiveLoss(encoder, regressor)
 
 
 
@@ -130,15 +132,15 @@ class CIFAR10Experiment(ImageClassifierExperiment):
 
     @staticmethod
     def get_model():
-        encoder = od.ResidualAE(
+        encoder = novelly.ResidualAE(
             input_shape=(32, 32),
             encoder_sizes=[64, 128, 256],
             fc_sizes=[256, 64],
             color_channels=3,
             latent_activation=nn.Sigmoid())
 
-        regressor = od.AutoregresionModule(
+        regressor = novelly.AutoregresionModule(
             dim=64,
             layer_sizes=[32, 32, 32, 32, 100])
 
-        return od.AutoregressiveLoss(encoder, regressor)
+        return novelly.AutoregressiveLoss(encoder, regressor)

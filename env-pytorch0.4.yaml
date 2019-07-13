@@ -1,4 +1,4 @@
-name: od
+name: novelly
 channels:
   - conda-forge
   - pytorch
@@ -82,5 +82,5 @@ dependencies:
   - pip:
     - nvvl==1.0
     - torch==0.4.1.post2
-prefix: /media/silverpond/development/home/daniel/.local/conda/envs/od
+prefix: /media/silverpond/development/home/daniel/.local/conda/envs/novelly
 

@@ -4,7 +4,7 @@ import numpy as np
 import torch
 from torch import nn
 
-from od.utils import logger, mse_loss
+from novelly.utils import logger, mse_loss
 
 
 __all__ = ['AutoregressiveLoss', 'AutoregressiveLayer']
@@ -70,12 +70,15 @@ class AutoregressiveLayer(nn.Module):
 
 class AutoregressiveLoss(nn.Module):
 
-    def __init__(self, encoder, regressor, re_weight=1., reduction='mean', **kwargs):
+    def __init__(self, encoder, regressor, re_weight=.5, reduction='mean',
+                 scale=1, **kwargs):
         super().__init__(**kwargs)
+        assert 0 <= re_weight <= 1
         assert reduction in {'mean', 'sum', 'none'}
         self.encoder = encoder
         self.regressor = regressor
         self.re_weight = re_weight
+        self.scale = scale
         self.reduction = reduction
 
         self.register_scalar('bins', self.regressor.bins, torch.int64)
@@ -108,7 +111,8 @@ class AutoregressiveLoss(nn.Module):
             autoreg_loss = autoreg_loss.sum()
             reconstruction_loss = reconstruction_loss.sum()
 
-        loss = autoreg_loss + self.re_weight * reconstruction_loss
+        loss = (1 - self.re_weight) * autoreg_loss + self.re_weight * reconstruction_loss
+        loss *= self.scale
 
         if retlosses:
             return loss, {'reconstruction': reconstruction_loss,
