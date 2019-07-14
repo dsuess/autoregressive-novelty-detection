@@ -1,14 +1,21 @@
 import itertools as it
 import logging
 import os
+from collections import namedtuple
+from typing import Sequence
 
-import matplotlib.backends.backend_agg as pl_backend_agg
-import matplotlib.pyplot as pl
 import numpy as np
 import torch
 from torch import nn
+from torch.optim.lr_scheduler import _LRScheduler
 
-__all__ = ['get_default_logger', 'logger']
+import matplotlib.backends.backend_agg as pl_backend_agg
+import matplotlib.pyplot as pl
+
+__all__ = ['get_default_logger', 'logger', 'build_from_config', 'get_model_module']
+
+
+Split = namedtuple('Split', 'train, valid')
 
 
 def get_default_logger(name):
@@ -105,6 +112,37 @@ def iterbatch(iterable, batch_size=None):
                                it.islice(iterator, batch_size - 1))
         except StopIteration:
             pass
+
+
+def get_from_modules(name, modules):
+    for mod in modules:
+        try:
+            return getattr(mod, name)
+        except AttributeError:
+            pass
+    raise AttributeError(f'{name} not found in {modules}')
+
+
+def build_from_config(module, cfg, **kwargs):
+    cfg = cfg.copy()
+    name = cfg.pop('type')
+    module = list(module) if isinstance(module, Sequence) else [module]
+    the_class = get_from_modules(name, module)
+
+    try:
+        config_fn = the_class.from_config
+    except AttributeError:
+        return the_class(**cfg, **kwargs)
+    else:
+        return config_fn(cfg, **kwargs)
+
+
+def get_model_module(model):
+    try:
+        return model.module
+    except AttributeError:
+        return model
+
 
 
 logger = get_default_logger('AND')
