@@ -2,25 +2,25 @@ train:
   epochs: 100
   optimizer:
     type: SGD
-    lr: 0.05
+    lr: 0.01
     momentum: 0.9
     weight_decay: 0.0005
-    nesterov: True
+    nesterov: False
   scheduler:
     type: "WarmupLR"
-    burn_in_steps: 100
+    burn_in_steps: 1000
     after_scheduler:
       type: "StepLR"
-      step_size: 3000
+      step_size: 4000
       gamma: 0.2
 
 model:
   encoder:
     type: 'ResidualAE'
-    input_shape: [28, 28]
-    color_channels: 1
-    encoder_sizes: [32, 64]
-    fc_sizes: [64]
+    input_shape: [32, 32]
+    color_channels: 3
+    encoder_sizes: [64, 128, 256]
+    fc_sizes: [256, 64]
     latent_activation:
       type: "Sigmoid"
 
@@ -29,20 +29,16 @@ model:
     layer_sizes: [32, 32, 32, 32, 100]
 
   loss:
-    re_weight: 0.1
+    re_weight: 0.4
 
 data:
-  batch_size_per_gpu: 64
+  batch_size_per_gpu: 16
   workers_per_gpu: 4
   __common: &common
-    type: 'MNIST'
+    type: 'CIFAR10'
     positive_classes: [0, 1, 2]
   train:
     <<: *common
-    transforms:
-      - type: "RandomAffine"
-        degrees: 20
-        shear: 30
   valid:
     <<: *common
 
