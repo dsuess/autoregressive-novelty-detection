@@ -86,8 +86,7 @@ def run_single_experiment(cfg, output_dir):
         'scheduler': scheduler}
     trainer.add_event_handler(
         Events.STARTED, nvly.engine.restore_latest_checkpoint(**saver_args))
-    trainer.add_event_handler(
-        Events.EPOCH_COMPLETED, nvly.engine.save_checkpoint(**saver_args))
+
     update_scheduler = nvly.engine.step_lr_scheduler(
         optimizer, scheduler, on_epoch=False, summary_writer=summary_writer,
         verbose=False)
@@ -95,8 +94,14 @@ def run_single_experiment(cfg, output_dir):
         Events.ITERATION_COMPLETED, nvly.engine.every_n(10, update_scheduler))
     trainer.add_event_handler(
         Events.ITERATION_COMPLETED,
-        nvly.engine.log_iterations_per_second(n=250, summary_writer=summary_writer))
+        nvly.engine.log_iterations_per_second(n=50, summary_writer=summary_writer))
 
+    ckpt_every_n_epochs = cfg['train'].get('ckpt_every_n_epochs', None)
+    callback = nvly.engine.every_n(
+        ckpt_every_n_epochs, callback=nvly.engine.save_checkpoint(**saver_args),
+        on_epoch=True)
+    if ckpt_every_n_epochs is not None:
+        trainer.add_event_handler(Events.EPOCH_COMPLETED, callback)
 
     @trainer.on(Events.ITERATION_COMPLETED)
     @nvly.engine.every_n(10)
@@ -161,7 +166,8 @@ def single_experiment(config_file, output_dir):
         cfg = yaml.load(buf, Loader=yaml.FullLoader)
     if not (output_dir / config_file.name).exists():
         copyfile(config_file, output_dir / config_file.name)
-    run_single_experiment(cfg, output_dir)
+    best_score = run_single_experiment(cfg, output_dir)
+    print(best_score)
 
 
 @main.command(name='multiple-experiments')
@@ -176,6 +182,7 @@ def multiple_experiments(config_file, output_dir):
     if not (output_dir / config_file.name).exists():
         copyfile(config_file, output_dir / config_file.name)
 
+    result = []
     for experiment_configurations in cfg['experiment_configurations']:
         local_cfg = cfg.copy()
         local_cfg.pop('experiment_configurations')
@@ -184,7 +191,10 @@ def multiple_experiments(config_file, output_dir):
         local_cfg['data']['valid']['positive_classes'] = positive_classes
         local_output_dir = output_dir / f'with_{"_".join(str(s) for s in positive_classes)}'
         local_output_dir.mkdir(exist_ok=True)
-        run_single_experiment(local_cfg, local_output_dir)
+        best_score = run_single_experiment(local_cfg, local_output_dir)
+        result.append(best_score)
+
+    print(result)
 
 
 @main.command('shanghai-tech')
