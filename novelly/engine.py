@@ -16,7 +16,7 @@ def _prepare_batch(x, device=None, non_blocking=False):
     return convert_tensor(x, device=device, non_blocking=non_blocking)
 
 
-def create_unsupervised_trainer(model, optimizer, device=None, non_blocking=False,
+def create_unsupervised_trainer(model, optimizer, loss_fn, device=None, non_blocking=False,
                                 prepare_batch=_prepare_batch):
     if device:
         model.to(device)
@@ -25,7 +25,8 @@ def create_unsupervised_trainer(model, optimizer, device=None, non_blocking=Fals
         model.train()
         optimizer.zero_grad()
         x = prepare_batch(x, device=device, non_blocking=non_blocking)
-        loss, loss_items = model(x, retlosses=True)
+        y = model(x, return_reconstruction=True)
+        loss, loss_items = loss_fn(y, x, retlosses=True)
         loss.backward()
         optimizer.step()
 

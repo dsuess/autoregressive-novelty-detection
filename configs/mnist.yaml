@@ -22,7 +22,6 @@ model:
 
   regressor:
     type: 'AutoregressionModule'
-    embedding_dim: 64
     layer_sizes: [32, 32, 32, 32, 100]
 
   loss:

@@ -2,11 +2,11 @@ import numpy as np
 import torch
 from torch import nn
 
-from novelly.utils import logger, mse_loss
-from .linear import AutoregressiveLoss
+from novelly.utils import logger
+#  from .linear import AutoregressiveLoss
 
 
-__all__ = ['AutoregressiveVideoLoss', 'AutoregressiveConvLayer']
+#  __all__ = ['AutoregressiveVideoLoss', 'AutoregressiveConvLayer']
 
 
 class AutoregressiveConv(nn.Conv1d):
@@ -84,19 +84,19 @@ class AutoregressiveConvLayer(nn.Module):
         return y
 
 
-class AutoregressiveVideoLoss(AutoregressiveLoss):
+#  class AutoregressiveVideoLoss(AutoregressiveLoss):
 
-    def _autoreg_loss(self, latent):
-        # move time axis to back as expected by regressor
-        # FIXME Change order in autoencoder to have time axis last
-        latent = latent.permute(0, 2, 1)
-        latent_binned = (latent * self.bins.float()).type(torch.int64)
-        latent_binned = latent_binned.clamp(0, self.bins - 1)
-        latent_binned = latent_binned
-        latent_binned_pred = self.regressor(
-            latent.view(latent.size(0), latent.size(1), 1, latent.size(2)))
-        latent_binned_pred = latent_binned_pred.permute(0, 2, 1, 3)
+    #  def _autoreg_loss(self, latent):
+        #  # move time axis to back as expected by regressor
+        #  # FIXME Change order in autoencoder to have time axis last
+        #  latent = latent.permute(0, 2, 1)
+        #  latent_binned = (latent * self.bins.float()).type(torch.int64)
+        #  latent_binned = latent_binned.clamp(0, self.bins - 1)
+        #  latent_binned = latent_binned
+        #  latent_binned_pred = self.regressor(
+            #  latent.view(latent.size(0), latent.size(1), 1, latent.size(2)))
+        #  latent_binned_pred = latent_binned_pred.permute(0, 2, 1, 3)
 
-        autoreg_loss = nn.functional.cross_entropy(
-            latent_binned_pred, latent_binned, reduction='none')
-        return autoreg_loss.mean(dim=2).mean(dim=1)
+        #  autoreg_loss = nn.functional.cross_entropy(
+            #  latent_binned_pred, latent_binned, reduction='none')
+        #  return autoreg_loss.mean(dim=2).mean(dim=1)

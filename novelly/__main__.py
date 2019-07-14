@@ -1,3 +1,4 @@
+import functools as ft
 import resource
 import tempfile
 from pathlib import Path
@@ -50,18 +51,16 @@ def run(config_file, output_dir):
         cfg = yaml.load(buf, Loader=yaml.FullLoader)
 
     ngpus = torch.cuda.device_count()
-    model = nvly.AutoregressiveLoss(
-        encoder=build_from_config(nvly.encoders, cfg['model']['encoder']),
-        regressor=build_from_config(nvly.autoregress, cfg['model']['regressor']),
-        **cfg['model']['loss'])
-    if ngpus == 0:
-        device = 'cpu:0'
-    elif ngpus == 1:
-        device = 'cuda:0'
+    device = 'cuda:0' if ngpus > 0 else 'cpu:0'
+    autoencoder = build_from_config(nvly.encoders, cfg['model']['encoder'])
+    model = build_from_config(
+        nvly.autoregress, cfg['model']['regressor'], autoencoder=autoencoder)
+    loss = ft.partial(nvly.autoregressive_loss, **cfg['model']['loss'])
+    model.to(device)
+
     if ngpus > 1:
         cfg['train']['optimizer']['lr'] *= ngpus
         model = torch.nn.DataParallel(model)
-        device = None
 
     datasets, loaders = build_data(cfg['data'])
     optimizer = build_from_config(
@@ -78,7 +77,7 @@ def run(config_file, output_dir):
 
     # Create trainer
     trainer = nvly.engine.create_unsupervised_trainer(
-        model, optimizer, device=device, non_blocking=True)
+        model, optimizer, loss, device=device, non_blocking=True)
     saver_args = {
         'model': model, 'ckpt_dir': output_dir, 'optimizer': optimizer,
         'scheduler': scheduler}

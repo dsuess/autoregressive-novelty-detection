@@ -4,10 +4,10 @@ import numpy as np
 import torch
 from torch import nn
 
-from novelly.utils import logger, mse_loss
+from novelly.utils import build_from_config, logger
 
 
-__all__ = ['AutoregressiveLoss', 'AutoregressiveLayer']
+__all__ = ['AutoregressiveLayer', 'AutoregressionModule']
 
 
 # TODO Optimize axis alignment to get rid of permute in loss
@@ -68,56 +68,42 @@ class AutoregressiveLayer(nn.Module):
         return y
 
 
-class AutoregressiveLoss(nn.Module):
+class AutoregressionModule(nn.Module):
+    def __init__(self, autoencoder, layer_sizes, activation=None,
+                 batchnorm=True, layer=AutoregressiveLayer):
+        super().__init__()
+        self.autoencoder = autoencoder
+        self.layer_sizes = list(layer_sizes)
+        dimensions = list(zip([1] + self.layer_sizes, self.layer_sizes))
+        activation = activation if activation is not None else nn.LeakyReLU()
+        activation_fns = [activation] * (len(dimensions) - 1) + [None]
+        batchnorm = [batchnorm] * (len(dimensions) - 1) + [False]
+        mask_types = ['A'] + ['B'] * (len(dimensions) - 1)
+        configuration = zip(dimensions, activation_fns, mask_types, batchnorm)
 
-    def __init__(self, encoder, regressor, re_weight=.5, reduction='mean',
-                 scale=1, **kwargs):
-        super().__init__(**kwargs)
-        assert 0 <= re_weight <= 1
-        assert reduction in {'mean', 'sum', 'none'}
-        self.encoder = encoder
-        self.regressor = regressor
-        self.re_weight = re_weight
-        self.reduction = reduction
-
-        self.register_scalar('bins', self.regressor.bins, torch.int64)
+        self.regressor = nn.Sequential(
+            *[layer(autoencoder.embedding_dim, d_in, d_out, activation=fn,
+                    batchnorm=bn, mask_type=mt)
+              for (d_in, d_out), fn, mt, bn in configuration])
+        self.register_scalar('bins', self.layer_sizes[-1], torch.int64)
 
     def register_scalar(self, name, val, dtype):
         val = torch.Tensor([val]).reshape(tuple()).to(dtype)
         self.register_buffer(name, val)
 
-    def _autoreg_loss(self, latent):
+    def forward(self, x, return_reconstruction=False):
+        latent = self.autoencoder.encode(x)
         latent_binned = (latent * self.bins.float()).type(torch.int64)
         latent_binned = latent_binned.clamp(0, self.bins - 1)
         latent_binned_pred = self.regressor(latent).permute(0, 2, 1)
-        autoreg_loss = nn.functional.cross_entropy(
-            latent_binned_pred, latent_binned, reduction='none')
-        return autoreg_loss.mean(dim=1)
+        autoreg_score = nn.functional.cross_entropy(
+            latent_binned_pred, latent_binned, reduction='none').mean(dim=1)
+        return autoreg_score if not return_reconstruction \
+            else (autoreg_score, self.autoencoder.decode(latent))
 
-    def forward(self, x, retlosses=False):
-        latent = self.encoder.encode(x)
-        autoreg_loss = self._autoreg_loss(latent)
-
-        reconstruction = self.encoder.decode(latent)
-        reconstruction_loss = mse_loss(x, reconstruction, reduction='none')
-        reconstruction_loss = reconstruction_loss.view(reconstruction_loss.size(0), -1)
-        reconstruction_loss = reconstruction_loss.sum(dim=1)
-
-        if self.reduction == 'mean':
-            autoreg_loss = autoreg_loss.mean()
-            reconstruction_loss = reconstruction_loss.mean()
-        elif self.reduction == 'sum':
-            autoreg_loss = autoreg_loss.sum()
-            reconstruction_loss = reconstruction_loss.sum()
-
-        loss = (1 - self.re_weight) * autoreg_loss + self.re_weight * reconstruction_loss
-
-        if retlosses:
-            return loss, {'reconstruction': reconstruction_loss,
-                          'autoregressive': autoreg_loss}
-        return loss
-
-    def predict(self, x):
-        with torch.no_grad():
-            latent = self.encoder.encode(x)
-            return self._autoreg_loss(latent)
+    @classmethod
+    def from_config(cls, cfg, **kwargs):
+        cfg = cfg.copy()
+        if 'latent_activation' in cfg:
+            cfg['activation'] = build_from_config(nn, cfg.pop('latent_activation'))
+        return cls(**cfg, **kwargs)
