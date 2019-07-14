@@ -1,8 +1,8 @@
 train:
-  epochs: 20
+  epochs: 30
   optimizer:
     type: SGD
-    lr: 0.001
+    lr: 0.002
     momentum: 0.9
     weight_decay: 0.0005
     nesterov: True
@@ -41,3 +41,15 @@ data:
         shear: 30
   valid:
     <<: *common
+
+experiment_configurations:
+  - positive_classes: [0]
+  - positive_classes: [1]
+  - positive_classes: [2]
+  - positive_classes: [3]
+  - positive_classes: [4]
+  - positive_classes: [5]
+  - positive_classes: [6]
+  - positive_classes: [7]
+  - positive_classes: [8]
+  - positive_classes: [9]

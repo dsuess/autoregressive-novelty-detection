@@ -52,18 +52,7 @@ def make_example_images(autoencoder, sample_images, device=None):
     return all_images
 
 
-@main.command(name='run')
-@click.option('--config-file', '-c', required=True, type=click.Path(dir_okay=False, exists=True))
-@click.option('--output-dir', '-o', required=True, type=click.Path(file_okay=False, writable=True))
-def run(config_file, output_dir):
-    output_dir = Path(output_dir)
-    output_dir.mkdir(exist_ok=True, parents=True)
-    config_file = Path(config_file)
-    with open(config_file) as buf:
-        cfg = yaml.load(buf, Loader=yaml.FullLoader)
-    if not (output_dir / config_file.name).exists():
-        copyfile(config_file, output_dir / config_file.name)
-
+def run_single_experiment(cfg, output_dir):
     ngpus = torch.cuda.device_count()
     device = 'cuda:0' if ngpus > 0 else 'cpu:0'
     autoencoder = build_from_config(nvly.encoders, cfg['model']['encoder'])
@@ -133,6 +122,7 @@ def run(config_file, output_dir):
         'known': datasets.valid.sample_images(10, should_be_known=True),
         'unknown': datasets.valid.sample_images(10, should_be_known=False)
     }
+    best_score = 0
 
     @trainer.on(Events.EPOCH_COMPLETED)
     def log_evaluation_results(engine):
@@ -153,7 +143,48 @@ def run(config_file, output_dir):
             summary_writer.add_scalar(
                 f'metrics/{name}', value, engine.state.iteration)
 
+        nonlocal best_score
+        best_score = max(best_score, metrics['roc_auc'])
+
     trainer.run(loaders.train, max_epochs=cfg['train']['epochs'])
+    return best_score
+
+
+@main.command(name='single-experiment')
+@click.option('--config-file', '-c', required=True, type=click.Path(dir_okay=False, exists=True))
+@click.option('--output-dir', '-o', required=True, type=click.Path(file_okay=False, writable=True))
+def single_experiment(config_file, output_dir):
+    output_dir = Path(output_dir)
+    output_dir.mkdir(exist_ok=True, parents=True)
+    config_file = Path(config_file)
+    with open(config_file) as buf:
+        cfg = yaml.load(buf, Loader=yaml.FullLoader)
+    if not (output_dir / config_file.name).exists():
+        copyfile(config_file, output_dir / config_file.name)
+    run_single_experiment(cfg, output_dir)
+
+
+@main.command(name='multiple-experiments')
+@click.option('--config-file', '-c', required=True, type=click.Path(dir_okay=False, exists=True))
+@click.option('--output-dir', '-o', required=True, type=click.Path(file_okay=False, writable=True))
+def multiple_experiments(config_file, output_dir):
+    output_dir = Path(output_dir)
+    output_dir.mkdir(exist_ok=True, parents=True)
+    config_file = Path(config_file)
+    with open(config_file) as buf:
+        cfg = yaml.load(buf, Loader=yaml.FullLoader)
+    if not (output_dir / config_file.name).exists():
+        copyfile(config_file, output_dir / config_file.name)
+
+    for experiment_configurations in cfg['experiment_configurations']:
+        local_cfg = cfg.copy()
+        local_cfg.pop('experiment_configurations')
+        positive_classes  = experiment_configurations['positive_classes']
+        local_cfg['data']['train']['positive_classes'] = positive_classes
+        local_cfg['data']['valid']['positive_classes'] = positive_classes
+        local_output_dir = output_dir / f'with_{"_".join(str(s) for s in positive_classes)}'
+        local_output_dir.mkdir(exist_ok=True)
+        run_single_experiment(local_cfg, local_output_dir)
 
 
 @main.command('shanghai-tech')
