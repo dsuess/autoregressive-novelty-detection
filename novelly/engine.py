@@ -4,10 +4,12 @@ from pathlib import Path
 from time import time
 
 import torch
+import ignite
 from ignite.engine.engine import Engine
 from ignite.utils import convert_tensor
 
 from novelly.utils import logger
+from sklearn.metrics import roc_auc_score
 
 __all__ = ['create_unsupervised_trainer']
 
@@ -152,3 +154,22 @@ def every_n(n, callback=None, on_epoch=False):
 
     return ft.partial(func, callback=callback) if callback is not None \
         else (lambda c: ft.partial(func, callback=c))
+
+
+class RocAucScore(ignite.metrics.Metric):
+    def __init__(self):
+        super().__init__()
+        self.y_t = []
+        self.y_p = []
+
+    def reset(self):
+        self.y_t = []
+        self.y_p = []
+
+    def update(self, output):
+        # "-" because autoreg. losses approximates neg. log. likelihood
+        self.y_p += list(-output[0].detach().to('cpu').numpy())
+        self.y_t += list(output[1].detach().to('cpu').numpy())
+
+    def compute(self):
+        return roc_auc_score(self.y_t, self.y_p)

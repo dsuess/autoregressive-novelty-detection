@@ -20,7 +20,8 @@ def autoregressive_loss(y, x, re_weight=0.5, reduction='mean', retlosses=False):
 
     if retlosses:
         return loss, {'reconstruction': reconstruction_loss,
-                        'autoregressive': autoreg_score}
+                      'autoregressive': autoreg_score,
+                      'total': loss}
     else:
         return loss
 

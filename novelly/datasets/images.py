@@ -45,6 +45,13 @@ class NoveltyDetectionDataset(Dataset, abc.ABC):
             self.data = data
             self.targets = is_known
 
+    def sample_images(self, n, should_be_known=None):
+        sel = torch.arange(len(self))
+        if should_be_known is not None:
+            sel = sel[self.targets == int(should_be_known)]
+        choice = np.random.choice(len(sel), size=min(n, len(sel)), replace=False)
+        return torch.stack([self[i][0] for i in choice], dim=0)
+
     @abc.abstractmethod
     def load(self, train):
         pass

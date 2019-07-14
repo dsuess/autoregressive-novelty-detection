@@ -11,6 +11,7 @@ import yaml
 from ignite.engine import Events
 from sklearn import metrics
 from torch.utils.tensorboard import SummaryWriter
+from shutil import copyfile
 
 import novelly as nvly
 from novelly.utils import Split, build_from_config, logger
@@ -43,12 +44,25 @@ def build_data(cfg):
     return datasets, loaders
 
 
+def make_example_images(autoencoder, sample_images, device=None):
+    imgs_pred = autoencoder(sample_images.to(device))
+    img_pairs = zip(sample_images, imgs_pred.cpu())
+    img_merged = (tv.utils.make_grid(list(pair), nrow=1) for pair in img_pairs)
+    all_images = tv.utils.make_grid(list(img_merged), nrow=len(sample_images))
+    return all_images
+
+
 @main.command(name='run')
 @click.option('--config-file', '-c', required=True, type=click.Path(dir_okay=False, exists=True))
 @click.option('--output-dir', '-o', required=True, type=click.Path(file_okay=False, writable=True))
 def run(config_file, output_dir):
+    output_dir = Path(output_dir)
+    output_dir.mkdir(exist_ok=True, parents=True)
+    config_file = Path(config_file)
     with open(config_file) as buf:
         cfg = yaml.load(buf, Loader=yaml.FullLoader)
+    if not (output_dir / config_file.name).exists():
+        copyfile(config_file, output_dir / config_file.name)
 
     ngpus = torch.cuda.device_count()
     device = 'cuda:0' if ngpus > 0 else 'cpu:0'
@@ -70,7 +84,7 @@ def run(config_file, output_dir):
         optimizer=optimizer)
 
     # Create evaluator
-    metrics = {'accuracy': ignite.metrics.Accuracy()}
+    metrics = {'roc_auc': nvly.engine.RocAucScore()}
     evaluator = ignite.engine.create_supervised_evaluator(
         model, metrics=metrics, device=device, non_blocking=True)
     summary_writer = SummaryWriter(output_dir)
@@ -86,12 +100,13 @@ def run(config_file, output_dir):
     trainer.add_event_handler(
         Events.EPOCH_COMPLETED, nvly.engine.save_checkpoint(**saver_args))
     update_scheduler = nvly.engine.step_lr_scheduler(
-        optimizer, scheduler, on_epoch=False, summary_writer=summary_writer)
+        optimizer, scheduler, on_epoch=False, summary_writer=summary_writer,
+        verbose=False)
     trainer.add_event_handler(
         Events.ITERATION_COMPLETED, nvly.engine.every_n(10, update_scheduler))
     trainer.add_event_handler(
         Events.ITERATION_COMPLETED,
-        nvly.engine.log_iterations_per_second(n=50, summary_writer=summary_writer))
+        nvly.engine.log_iterations_per_second(n=250, summary_writer=summary_writer))
 
 
     @trainer.on(Events.ITERATION_COMPLETED)
@@ -99,15 +114,14 @@ def run(config_file, output_dir):
     def log_training_loss(engine):
         prefix = nvly.engine.get_log_prefix(engine)
         msgs = ', '.join(
-            [f'{name}: {value:.3f}' for name, value in engine.state.metrics.items()])
-        logger.info(f'{prefix} Loss: {engine.state.output:.3f}, {msgs}')
+            [f'{name}={value:.3f}' for name, value in engine.state.metrics.items()])
+        print(f'{prefix} Losses: {msgs}')
 
-        summary_writer.add_scalar(
-            'losses/total', engine.state.output, engine.state.iteration)
         for name, val in engine.state.metrics.items():
             summary_writer.add_scalar(
                 f'losses/{name}', val, engine.state.iteration)
             engine.state.metrics[name] = 0
+        engine.state.avg_counter = 0
 
     @trainer.on(Events.EPOCH_STARTED)
     def reset_metrics(engine):
@@ -115,19 +129,28 @@ def run(config_file, output_dir):
         for name in engine.state.metrics:
             engine.state.metrics[name] = 0
 
-    #@trainer.on(Events.EPOCH_COMPLETED)
+    example_images = {
+        'known': datasets.valid.sample_images(10, should_be_known=True),
+        'unknown': datasets.valid.sample_images(10, should_be_known=False)
+    }
+
+    @trainer.on(Events.EPOCH_COMPLETED)
     def log_evaluation_results(engine):
         model.eval()
+        for name, imgs in example_images.items():
+            imgs = make_example_images(autoencoder, imgs, device=device)
+            summary_writer.add_image(name, imgs, engine.state.iteration)
+
         evaluator.run(loaders.valid)
         metrics = evaluator.state.metrics
 
         prefix = nvly.engine.get_log_prefix(engine)
         msgs = ', '.join(
             [f'{name}: {value:.3f}' for name, value in metrics.items()])
-        logger.info(f'{prefix} {msgs}')
+        print(f'{prefix} {msgs}')
 
         for name, value in metrics.items():
-            summary_writer.val.add_scalar(
+            summary_writer.add_scalar(
                 f'metrics/{name}', value, engine.state.iteration)
 
     trainer.run(loaders.train, max_epochs=cfg['train']['epochs'])
