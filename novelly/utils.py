@@ -131,4 +131,4 @@ def get_model_module(model):
 
 
 
-logger = get_default_logger('AND')
+logger = get_default_logger('novelly')

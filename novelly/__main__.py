@@ -70,9 +70,9 @@ def run(config_file, output_dir):
         optimizer=optimizer)
 
     # Create evaluator
-    #  metrics = {'accuracy': ignite.metrics.Accuracy()}
-    #  evaluator = ignite.engine.create_supervised_evaluator(
-    #      model, metrics=metrics, device=device, non_blocking=True)
+    metrics = {'accuracy': ignite.metrics.Accuracy()}
+    evaluator = ignite.engine.create_supervised_evaluator(
+        model, metrics=metrics, device=device, non_blocking=True)
     summary_writer = SummaryWriter(output_dir)
 
     # Create trainer

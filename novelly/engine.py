@@ -44,10 +44,11 @@ def create_unsupervised_trainer(model, optimizer, loss_fn, device=None, non_bloc
 def get_log_prefix(engine):
     n_iterations = len(engine.state.dataloader)
     return (f'[Epoch {engine.state.epoch}/{engine.state.max_epochs}] '
-            f'[Iteration {engine.state.iteration} / {n_iterations}]')
+            f'[Iteration {engine.state.iteration % n_iterations}/{n_iterations}]')
 
 
-def restore_latest_checkpoint(model, ckpt_dir, glob='*.pt', **kwargs):
+def restore_latest_checkpoint(model, ckpt_dir, glob='*.pt', verbose=True,
+                              **kwargs):
     ckpt_dir = Path(ckpt_dir)
     try:
         module = model.module
@@ -67,13 +68,14 @@ def restore_latest_checkpoint(model, ckpt_dir, glob='*.pt', **kwargs):
 
         for name, item in kwargs.items():
             item.load_state_dict(checkpoint[name])
-
-        logger.info(f'{get_log_prefix(engine)} Restored from {latest_ckpt_path}')
+        if verbose:
+            print(f'{get_log_prefix(engine)} Restored from {latest_ckpt_path}')
 
     return func
 
 
-def save_checkpoint(model, ckpt_dir, template='checkpoint_{epoch}.pt', **kwargs):
+def save_checkpoint(model, ckpt_dir, template='checkpoint_{epoch}.pt',
+                    verbose=True, **kwargs):
     ckpt_dir = Path(ckpt_dir)
     try:
         module = model.module
@@ -92,17 +94,20 @@ def save_checkpoint(model, ckpt_dir, template='checkpoint_{epoch}.pt', **kwargs)
         ckpt_path = ckpt_dir / template.format(epoch=engine.state.epoch,
                                                iteration=engine.state.iteration)
         torch.save(state, ckpt_path)
-        logger.info(f'{get_log_prefix(engine)} Saved checkpoint to {ckpt_path}')
+        if verbose:
+            print(f'{get_log_prefix(engine)} Saved checkpoint to {ckpt_path}')
 
     return func
 
 
-def step_lr_scheduler(optimizer, scheduler, on_epoch=True, summary_writer=None):
+def step_lr_scheduler(optimizer, scheduler, on_epoch=True, summary_writer=None,
+                      verbose=True):
 
     def func(engine):
         scheduler.step(engine.state.epoch if on_epoch else engine.state.iteration)
         learning_rates = [g['lr'] for g in optimizer.param_groups]
-        logger.info(f'{get_log_prefix(engine)} Set learning rates to {learning_rates}')
+        if verbose:
+            print(f'{get_log_prefix(engine)} Set learning rates to {learning_rates}')
 
         if summary_writer is not None:
             for n, param_group in enumerate(optimizer.param_groups):
@@ -112,7 +117,7 @@ def step_lr_scheduler(optimizer, scheduler, on_epoch=True, summary_writer=None):
     return func
 
 
-def log_iterations_per_second(n=10, summary_writer=None):
+def log_iterations_per_second(n=10, summary_writer=None, verbose=True):
     def func(engine):
         loader = engine.state.dataloader
         counter = (engine.state.iteration - 1) % len(loader) + 1
@@ -124,7 +129,8 @@ def log_iterations_per_second(n=10, summary_writer=None):
             runtime = time() - last_called
             it_per_s = n / runtime
 
-            logger.info(f'{get_log_prefix(engine)} {it_per_s:.2f} it/s')
+            if verbose:
+                print(f'{get_log_prefix(engine)} {it_per_s:.2f} it/s')
             if summary_writer is not None:
                 summary_writer.add_scalar(
                     f'stats/it_per_s', it_per_s, engine.state.iteration)
