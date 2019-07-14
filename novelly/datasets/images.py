@@ -49,7 +49,7 @@ class NoveltyDetectionDataset(Dataset, abc.ABC):
         sel = torch.arange(len(self))
         if should_be_known is not None:
             sel = sel[self.targets == int(should_be_known)]
-        choice = np.random.choice(len(sel), size=min(n, len(sel)), replace=False)
+        choice = np.random.choice(sel.numpy(), size=min(n, len(sel)), replace=False)
         return torch.stack([self[i][0] for i in choice], dim=0)
 
     @abc.abstractmethod

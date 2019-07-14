@@ -2,13 +2,17 @@ train:
   epochs: 30
   optimizer:
     type: SGD
-    lr: 0.002
+    lr: 0.05
     momentum: 0.9
     weight_decay: 0.0005
     nesterov: True
   scheduler:
     type: "WarmupLR"
     burn_in_steps: 100
+    after_scheduler:
+      type: "StepLR"
+      step_size: 5000
+      gamma: 0.2
 
 model:
   encoder:
@@ -25,7 +29,7 @@ model:
     layer_sizes: [32, 32, 32, 32, 100]
 
   loss:
-    re_weight: 0.5
+    re_weight: 0.1
 
 data:
   batch_size_per_gpu: 64

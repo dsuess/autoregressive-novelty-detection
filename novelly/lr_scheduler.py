@@ -6,7 +6,8 @@ class WarmupLR(lr_scheduler._LRScheduler):
     def __init__(self, optimizer, burn_in_steps, after_scheduler=None, **kwargs):
         self.burn_in_steps = burn_in_steps
         if isinstance(after_scheduler, dict):
-            after_scheduler = build_from_config(lr_scheduler, after_scheduler)
+            after_scheduler = build_from_config(lr_scheduler, after_scheduler,
+                                                optimizer=optimizer)
         self.after_scheduler = after_scheduler
         super().__init__(optimizer, **kwargs)
 
