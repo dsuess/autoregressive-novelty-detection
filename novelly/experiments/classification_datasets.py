@@ -15,7 +15,6 @@ from torchvision.utils import make_grid
 import matplotlib.pyplot as pl
 import novelly
 from novelly import utils
-from novelly.datasets import Split
 
 from .base import Experiment
 
@@ -39,14 +38,14 @@ def sample_examples(dataset, size, should_be_known):
 class ImageClassifierExperiment(Experiment):
 
     def __init__(self, datasets, *args, **kwargs):
-        self.datasets = Split(*datasets)
+        self.datasets = utils.Split(*datasets)
         super().__init__(*args, **kwargs)
-        self.sample_images = Split(
+        self.sample_images = utils.Split(
             sample_examples(self.datasets.train, size=10, should_be_known=True),
             sample_examples(self.datasets.test, size=10, should_be_known=False))
 
     def get_loaders(self):
-        return Split(
+        return utils.Split(
             DataLoader(self.datasets.train, batch_size=self.batch_size,
                        shuffle=True, num_workers=cpu_count()),
             DataLoader(self.datasets.test, batch_size=self.batch_size,
@@ -122,8 +121,6 @@ class MNISTExperiment(ImageClassifierExperiment):
             layer_sizes=[32, 32, 32, 32, 100])
 
         return novelly.AutoregressiveLoss(encoder, regressor)
-
-
 
 
 class CIFAR10Experiment(ImageClassifierExperiment):

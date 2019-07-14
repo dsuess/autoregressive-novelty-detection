@@ -2,6 +2,7 @@ import abc
 import functools as ft
 import os
 import pickle
+import tempfile
 from collections import namedtuple
 from operator import add
 from pathlib import Path
@@ -10,30 +11,32 @@ import numpy as np
 import torch
 import torchvision as tv
 from PIL import Image
-from torch.utils.data import TensorDataset
+from torch.utils.data import DataLoader, Dataset, TensorDataset
 
-from ..utils import isin, logger
-from .utils import Split
+from novelly.utils import isin, logger, build_from_config
 
 __all__ = ['MNIST', 'CIFAR10']
 
 
-class NoveltyDetectionDataset(abc.ABC):
+class NoveltyDetectionDataset(Dataset, abc.ABC):
 
     MODE = None
+    LOADER = DataLoader
 
-    def __init__(self, root, training_classes, train=True, transform=None,
-                 download=False, yield_target=True):
-        self.root = root
+    def __init__(self, positive_classes, root=None, train=True, transform=None,
+                 download=False):
+        self.root = root if root is not None \
+            else Path(tempfile.gettempdir()) / type(self).__name__
         self.transform = transform
-        self.yield_target = yield_target
+        self.yield_target = not train
 
         if download:
+            self.root.mkdir(exist_ok=True)
             self.download()
 
         data, targets = self.load(train)
-        training_classes = torch.Tensor(list(training_classes)).to(targets.dtype)
-        is_known = isin(targets, training_classes)
+        positive_classes = torch.Tensor(list(positive_classes)).to(targets.dtype)
+        is_known = isin(targets, positive_classes)
 
         if train:
             self.data = data[is_known.nonzero()][:, 0]
@@ -55,17 +58,6 @@ class NoveltyDetectionDataset(abc.ABC):
         fmt_str += '    Number of positive examples: {}'.format(self.targets.sum())
         return fmt_str
 
-    @classmethod
-    def load_split(cls, *args, transforms=None, **kwargs):
-        transforms = list(transforms) if transforms is not None else []
-        train_transform = tv.transforms.Compose(
-            transforms + [tv.transforms.ToTensor()])
-        test_transform = tv.transforms.Compose([tv.transforms.ToTensor()])
-        datasets = Split(
-            cls(*args, train=True, transform=train_transform, yield_target=False, **kwargs),
-            cls(*args, train=False, transform=test_transform, yield_target=True, **kwargs))
-        return datasets
-
     def __getitem__(self, index):
         img, target = self.data[index], self.targets[index]
         img = Image.fromarray(img.numpy(), mode=self.MODE)
@@ -75,13 +67,30 @@ class NoveltyDetectionDataset(abc.ABC):
 
         return (img, target) if self.yield_target else img
 
+    @classmethod
+    def from_config(cls, cfg, **kwargs):
+        cfg = cfg.copy()
+
+        try:
+            transforms = cfg.pop('transforms')
+        except KeyError:
+            transforms = []
+        else:
+            transforms = [
+                build_from_config(tv.transforms, c) for c in transforms]
+
+        transforms.append(tv.transforms.ToTensor())
+        transform = tv.transforms.Compose(transforms)
+        return cls(**cfg, transform=transform, **kwargs)
+
+
 
 class MNIST(NoveltyDetectionDataset, tv.datasets.MNIST):
 
     MODE = 'L'
     def load(self, train):
         path = self.training_file if train else self.test_file
-        return torch.load(os.path.join(self.root, self.processed_folder, path))
+        return torch.load(os.path.join(str(self.root), self.processed_folder, path))
 
 
 class CIFAR10(NoveltyDetectionDataset, tv.datasets.CIFAR10):

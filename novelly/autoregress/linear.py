@@ -35,7 +35,7 @@ class AutoregressiveLinear(nn.Linear):
         return y.view(-1, *self.out_shape)
 
     @staticmethod
-    def _get_name(self):
+    def _get_name():
         return 'AutoregressiveLinear'
 
     def extra_repr(self):
@@ -47,7 +47,7 @@ class AutoregressiveLayer(nn.Module):
     def __init__(self, *args, activation=None, batchnorm=True, **kwargs):
         super().__init__()
         self.linear = AutoregressiveLinear(*args, **kwargs)
-        self.activation = activation() if activation is not None else None
+        self.activation = activation
         self.in_shape = (np.prod(self.linear.out_shape),)
         self.out_shape = self.linear.out_shape
 
@@ -78,7 +78,6 @@ class AutoregressiveLoss(nn.Module):
         self.encoder = encoder
         self.regressor = regressor
         self.re_weight = re_weight
-        self.scale = scale
         self.reduction = reduction
 
         self.register_scalar('bins', self.regressor.bins, torch.int64)
@@ -112,7 +111,6 @@ class AutoregressiveLoss(nn.Module):
             reconstruction_loss = reconstruction_loss.sum()
 
         loss = (1 - self.re_weight) * autoreg_loss + self.re_weight * reconstruction_loss
-        loss *= self.scale
 
         if retlosses:
             return loss, {'reconstruction': reconstruction_loss,

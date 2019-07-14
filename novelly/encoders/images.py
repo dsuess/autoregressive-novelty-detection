@@ -1,7 +1,8 @@
+import numpy as np
 import torch
 from torch import nn
-import numpy as np
 
+from novelly.utils import build_from_config
 
 __all__ = ['ResidualAE']
 
@@ -106,6 +107,7 @@ class ResidualAE(nn.Module):
         self.fc_encoder = nn.Sequential(
             *[fc_layer(*d, activation=nn.LeakyReLU()) for d in fc_dims[:-1]],
             fc_layer(*fc_dims[-1], activation=latent_activation, batchnorm=False))
+        self.embedding_dim = fc_sizes[-1]
 
         self.fc_decoder = nn.Sequential(
             *[fc_layer(d_out, d_in, activation=nn.LeakyReLU())
@@ -136,3 +138,10 @@ class ResidualAE(nn.Module):
         (2, 4, 64, 64)
         """
         return self.decode(self.encode(x))
+
+    @classmethod
+    def from_config(cls, cfg):
+        cfg = cfg.copy()
+        if 'latent_activation' in cfg:
+            cfg['latent_activation'] = build_from_config(nn, cfg.pop('latent_activation'))
+        return cls(**cfg)

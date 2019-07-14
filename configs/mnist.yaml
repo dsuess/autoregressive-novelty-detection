@@ -1,0 +1,44 @@
+train:
+  epochs: 20
+  optimizer:
+    type: SGD
+    lr: 0.001
+    momentum: 0.9
+    weight_decay: 0.0005
+    nesterov: True
+  scheduler:
+    type: "WarmupLR"
+    burn_in_steps: 100
+
+model:
+  encoder:
+    type: 'ResidualAE'
+    input_shape: [28, 28]
+    color_channels: 1
+    encoder_sizes: [32, 64]
+    fc_sizes: [64]
+    latent_activation:
+      type: "Sigmoid"
+
+  regressor:
+    type: 'AutoregressionModule'
+    embedding_dim: 64
+    layer_sizes: [32, 32, 32, 32, 100]
+
+  loss:
+    re_weight: 0.5
+
+data:
+  batch_size_per_gpu: 64
+  workers_per_gpu: 4
+  __common: &common
+    type: 'MNIST'
+    positive_classes: [0, 1, 2]
+  train:
+    <<: *common
+    transforms:
+      - type: "RandomAffine"
+        degrees: 20
+        shear: 30
+  valid:
+    <<: *common
