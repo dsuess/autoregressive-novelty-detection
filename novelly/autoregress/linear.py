@@ -53,7 +53,7 @@ class AutoregressiveLayer(nn.Module):
 
         if batchnorm:
             # TODO Find out why track_running_stats=True doesn't work well here
-            self.batchnorm = nn.BatchNorm1d(*self.in_shape, track_running_stats=False)
+            self.batchnorm = nn.BatchNorm1d(*self.in_shape)
         else:
             self.batchnorm = None
 

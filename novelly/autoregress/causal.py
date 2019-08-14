@@ -61,7 +61,7 @@ class AutoregressiveConvLayer(nn.Module):
 
         if batchnorm:
             size = self.conv.dim * self.conv.out_features
-            self.batchnorm = nn.BatchNorm1d(size, track_running_stats=False)
+            self.batchnorm = nn.BatchNorm1d(size)
         else:
             self.batchnorm = None
 
